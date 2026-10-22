@@ -430,7 +430,7 @@
   const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   // Version du jeu : affichée sur l'accueil et lue par android/build-apk.ps1 pour numéroter l'APK.
   // À changer à chaque nouvelle version (une seule source de vérité).
-  const GAME_VERSION = '1.1';
+  const GAME_VERSION = '1.2';
 
   // Serveur des classements (Supabase). Vides tant que le projet n'est pas créé : le jeu fonctionne
   // alors hors ligne. Ajouter « ?mock=1 » à l'adresse simule un serveur local pour tester.
@@ -1050,6 +1050,7 @@
     prog().unlocked = Math.max(prog().unlocked, state.level + 1);
     prog().game = null;
     persist();
+    scheduleCloudSave();
   }
 
   // Étoiles d'un niveau gagné, selon le meilleur combo réalisé dedans
@@ -1860,6 +1861,7 @@
     rec.plays++;
     rec.game = null;
     persist();
+    scheduleCloudSave();
     const why = { moves: 'Toutes les piles ont été posées.', time: 'Temps écoulé !', full: 'Plus aucune case libre.' }[reason];
     const extra = state.mode === 'survival' ? `<br>Tu as tenu <b>${state.turn}</b> piles` : '';
     if (isRecord) { Sfx.win(); confetti(); } else Sfx.lose();
@@ -2367,6 +2369,18 @@
         p.devices = [...(p.devices || []), secret].slice(-10);
         return { ok: true, player_id: p.id, secret, pseudo: p.pseudo };
       },
+      save_progress({ p_player, p_secret, p_data }) {
+        const p = auth(p_player, p_secret);
+        if (!p) return { ok: false, error: 'auth' };
+        if (!p_data || typeof p_data !== 'object' || Array.isArray(p_data)) return { ok: false, error: 'data' };
+        p.progress = p_data;
+        p.progressAt = new Date().toISOString();
+        return { ok: true };
+      },
+      load_progress({ p_player, p_secret }) {
+        const p = auth(p_player, p_secret);
+        return p ? { ok: true, data: p.progress || null, updated_at: p.progressAt || null } : { ok: false, error: 'auth' };
+      },
       get_profile({ p_player, p_secret }) {
         const p = auth(p_player, p_secret);
         return p ? { ok: true, pseudo: p.pseudo, has_pin: !!p.pin } : { ok: false, error: 'auth' };
@@ -2476,6 +2490,7 @@
     p.hasPin = !!r.has_pin;
     persist();
     renderHome();
+    await syncProgress();
     if (p.pinPending) await sendPendingPin();
     if (!p.hasPin && p.pinAsked !== todayKey() && !state.modalOpen) {
       p.pinAsked = todayKey();
@@ -2561,6 +2576,7 @@
     await sendPendingPin();
     renderHome();
     flushPending();
+    syncProgress();
   }
 
   /** Retrouver son pseudo sur cet appareil : pseudo + code PIN. */
@@ -2575,7 +2591,7 @@
         '<input id="loginPseudo" class="pseudoInput" maxlength="16" autocomplete="off" placeholder="Ton pseudo">' +
         pinInputHtml('loginPin', 'Ton code PIN') + warn +
         '<span id="loginErr" class="pseudoErr"></span>' +
-        '<small class="pinHelp">Ta progression des niveaux reste propre à chaque appareil ; ce sont tes scores en ligne qui te suivent.</small>',
+        '<small class="pinHelp">Tes niveaux débloqués et tes records te suivent : ils seront réunis avec ceux de cet appareil.</small>',
       buttons: [
         { label: 'Me connecter', primary: true, onClick: () => submitLogin() },
         { label: 'Retour', onClick: () => (p.playerId ? hideModal() : askPseudo(firstTime)) },
@@ -2609,10 +2625,14 @@
       if (save.profile.playerId && save.profile.playerId !== r.player_id) await flushPending();
       Object.assign(save.profile, { pseudo: r.pseudo, playerId: r.player_id, secret: r.secret, later: false, hasPin: true, pinPending: '' });
       persist();
+      err.textContent = 'Récupération de ta progression…';
+      const synced = await syncProgress();
       showModal({
         icon: '✅',
         title: `Salut ${r.pseudo} !`,
-        text: 'Tu es connecté sur cet appareil. Tes prochains scores iront à ce pseudo.',
+        text: 'Tu es connecté sur cet appareil. Tes prochains scores iront à ce pseudo.' +
+          (synced ? `<br><br>📥 Progression récupérée :<br><small>${progressSummary()}</small>`
+            : '<br><br><small>Ta progression n’a pas pu être récupérée pour l’instant : elle le sera au prochain lancement.</small>'),
         buttons: [{ label: 'Super', primary: true, onClick: () => hideModal() }],
       });
       renderHome();
@@ -2676,6 +2696,112 @@
       pseudoBusy = false;
     }
   }
+
+  /* ---------------- Progression en ligne (même pseudo sur plusieurs appareils) ---------------- */
+  // Seuls les acquis voyagent : niveaux débloqués, records par niveau, records des modes. Les parties en cours
+  // et les préférences (son, effets…) restent propres à chaque appareil.
+  // Fusion : on garde le meilleur de chaque valeur, l'ordre des synchronisations n'a donc pas d'importance
+  // et deux appareils qui jouent en même temps ne s'écrasent jamais leurs acquis.
+  const toCount = v => Math.max(0, Math.floor(Number(v)) || 0);
+
+  function progressSnapshot() {
+    const out = { v: 1, progress: {}, special: {} };
+    for (const k of DIFF_ORDER) out.progress[k] = { unlocked: save.progress[k].unlocked, best: save.progress[k].best };
+    for (const k of MODE_ORDER) {
+      const sp = save.special[k];
+      out.special[k] = { best: sp.best, bestCombo: sp.bestCombo, plays: sp.plays, date: sp.date };
+    }
+    return out;
+  }
+
+  /** Fusionne une progression venue du serveur dans la sauvegarde de cet appareil. Renvoie true si elle apporte du neuf. */
+  function mergeProgress(remote) {
+    if (!remote || typeof remote !== 'object') return false;
+    let changed = false;
+    for (const k of DIFF_ORDER) {
+      const r = remote.progress && remote.progress[k];
+      if (!r || typeof r !== 'object') continue;
+      const l = save.progress[k];
+      const unlocked = Math.min(toCount(r.unlocked), 100000);
+      if (unlocked > l.unlocked) { l.unlocked = unlocked; changed = true; }
+      if (!r.best || typeof r.best !== 'object') continue;
+      for (const [lvl, rb] of Object.entries(r.best)) {
+        if (!/^[0-9]{1,5}$/.test(lvl) || !rb || typeof rb !== 'object') continue;
+        const lb = l.best[lvl];
+        const score = Math.max(toCount(lb && lb.score), toCount(rb.score));
+        const combo = Math.max(toCount(lb && lb.combo), toCount(rb.combo));
+        if (!lb || score !== toCount(lb.score) || combo !== toCount(lb.combo)) { l.best[lvl] = { score, combo }; changed = true; }
+      }
+    }
+    for (const k of MODE_ORDER) {
+      const r = remote.special && remote.special[k];
+      if (!r || typeof r !== 'object') continue;
+      const l = save.special[k];
+      const best = toCount(r.best), bestCombo = toCount(r.bestCombo), plays = toCount(r.plays);
+      if (plays > l.plays) { l.plays = plays; changed = true; }
+      if (k === 'daily') {
+        // Le record du défi ne vaut que pour son jour : un jour plus récent remplace, un jour plus ancien est ignoré
+        const date = typeof r.date === 'string' ? r.date : '';
+        if (date > l.date) {
+          Object.assign(l, { date, best, bestCombo, game: null });
+          changed = true;
+          continue;
+        }
+        if (date < l.date) continue;
+      }
+      if (best > l.best) { l.best = best; changed = true; }
+      if (bestCombo > l.bestCombo) { l.bestCombo = bestCombo; changed = true; }
+    }
+    return changed;
+  }
+
+  /** Résumé lisible des niveaux débloqués, pour le message d'accueil après connexion. */
+  function progressSummary() {
+    return DIFF_ORDER.map(k => `${DIFFICULTIES[k].name} : niveau ${save.progress[k].unlocked}`).join(' · ');
+  }
+
+  let cloudTimer = 0;
+  let cloudBusy = false;
+  let cloudDirty = false;
+  /**
+   * Relit la progression en ligne, la fusionne ici, puis renvoie le résultat fusionné au serveur.
+   * Renvoie true si la synchronisation a abouti.
+   */
+  async function syncProgress() {
+    const p = save.profile;
+    if (!Net.enabled() || !p.playerId || cloudBusy) return false;
+    cloudBusy = true;
+    clearTimeout(cloudTimer);
+    try {
+      const r = await Net.rpc('load_progress', { p_player: p.playerId, p_secret: p.secret });
+      if (!r || !r.ok) {
+        if (r && r.error === 'auth') lostIdentity();
+        return false;
+      }
+      if (mergeProgress(r.data)) {
+        persist();
+        renderHome();
+      }
+      cloudDirty = false;
+      const w = await Net.rpc('save_progress', { p_player: p.playerId, p_secret: p.secret, p_data: progressSnapshot() });
+      if (!w || !w.ok) cloudDirty = true;
+      return true;
+    } catch (_) {
+      cloudDirty = true; // hors ligne : on réessaiera
+      return false;
+    } finally {
+      cloudBusy = false;
+    }
+  }
+
+  /** Après une victoire ou un record : envoi groupé quelques secondes plus tard. */
+  function scheduleCloudSave() {
+    cloudDirty = true;
+    clearTimeout(cloudTimer);
+    cloudTimer = setTimeout(syncProgress, 4000);
+  }
+  // L'appli passe en arrière-plan (ou l'onglet se ferme) : on envoie ce qui reste
+  document.addEventListener('visibilitychange', () => { if (document.hidden && cloudDirty) syncProgress(); });
 
   /* ---------------- Envoi des scores (avec file d'attente hors ligne) ---------------- */
   let flushing = false;
@@ -3809,8 +3935,8 @@
   flushPending();
   // Pseudo à jour (changé ailleurs ?) et invitation à créer un code PIN s'il n'en a pas
   setTimeout(syncProfile, 900);
-  window.addEventListener('online', () => { flushPending(); syncProfile(); });
-  if (MOCK) window.__hexa = { state, save, L, mergePreview }; // accès de test, seulement en mode démo
+  window.addEventListener('online', () => { flushPending(); syncProfile(); });  // syncProfile relance aussi la progression
+  if (MOCK) window.__hexa = { state, save, L, mergePreview, scheduleCloudSave }; // accès de test, seulement en mode démo
 })();
 </script>
 <script>
