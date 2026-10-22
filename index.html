@@ -289,6 +289,13 @@
   .pseudoInput:focus { border-color: var(--accent); }
   .pseudoErr { display: block; min-height: 1.3em; margin-top: 6px; font-size: 13px; color: #ffb0bb; }
   .worldLine { display: block; margin-top: 8px; font-size: 13px; color: #ffe9a8; }
+  .pinInput { margin-top: 8px; letter-spacing: 4px; }
+  .pinInput::placeholder { letter-spacing: 0; }
+  .pinHelp { display: block; margin-top: 6px; font-size: 12px; opacity: .8; }
+  .rankRow.tap { cursor: pointer; grid-template-columns: 64px 1fr auto; }
+  .rankRow.tap::after { content: '›'; font-size: 20px; font-weight: 900; opacity: .5; }
+  .topList { max-height: min(46vh, 380px); min-height: 0; margin: 4px -6px 0; }
+  .topList .rankRow { font-size: 13px; }
 </style>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
@@ -376,6 +383,8 @@
       <div class="secTitle">Préférences</div>
       <div class="prefList">
         <button id="prefPseudo" class="mBtn"></button>
+        <button id="prefPin" class="mBtn"></button>
+        <button id="prefLogin" class="mBtn">🔑 J’ai déjà un pseudo (autre appareil)</button>
         <button id="homeSound" class="mBtn"></button>
         <button id="homeTools" class="mBtn"></button>
         <button id="homeFx" class="mBtn"></button>
@@ -421,7 +430,7 @@
   const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   // Version du jeu : affichée sur l'accueil et lue par android/build-apk.ps1 pour numéroter l'APK.
   // À changer à chaque nouvelle version (une seule source de vérité).
-  const GAME_VERSION = '1.0';
+  const GAME_VERSION = '1.1';
 
   // Serveur des classements (Supabase). Vides tant que le projet n'est pas créé : le jeu fonctionne
   // alors hors ligne. Ajouter « ?mock=1 » à l'adresse simule un serveur local pour tester.
@@ -893,7 +902,7 @@
   // Hexa Sort Multi a sa propre sauvegarde : la version web classique (clé hexa-sort-v5) n'est
   // jamais modifiée. Au tout premier lancement, sa progression est seulement recopiée (lecture seule).
   // Le mode démo (?mock=1) a sa propre sauvegarde : son faux pseudo ne doit jamais partir au vrai serveur.
-  const SAVE_KEY = /[?&]mock=1\b/.test(location.search) ? 'hexa-sort-multi-mock' : 'hexa-sort-multi-v1';
+  const SAVE_KEY = /[?&]mock=1\b/.test(location.search) ? 'hexa-sort-multi-mock-save' : 'hexa-sort-multi-v1';
   const WEB_KEY = 'hexa-sort-v5';
   const V4_KEY = 'hexa-sort-v4';
   const V3_KEY = 'hexa-sort-v3';
@@ -940,7 +949,9 @@
   function loadSave() {
     const out = {
       v: 1, muted: false, noTools: false, lowFx: false, current: 'normal', progress: {}, special: {},
-      profile: { pseudo: '', playerId: '', secret: '', later: false }, // identité pour les classements
+      // Identité pour les classements. hasPin : null = pas encore su (vérifié auprès du serveur au lancement) ;
+      // pinPending : code choisi hors ligne, envoyé (puis effacé) dès l'inscription du pseudo.
+      profile: { pseudo: '', playerId: '', secret: '', later: false, hasPin: null, pinPending: '', pinAsked: '' },
       pending: [],                                                       // scores à envoyer dès que possible
     };
     // Sauvegarde Multi d'abord, sinon copie de la version web (V5, puis V4)
@@ -953,6 +964,9 @@
         playerId: typeof p.playerId === 'string' ? p.playerId : '',
         secret: typeof p.secret === 'string' ? p.secret : '',
         later: !!p.later,
+        hasPin: typeof p.hasPin === 'boolean' ? p.hasPin : null,
+        pinPending: typeof p.pinPending === 'string' ? p.pinPending : '',
+        pinAsked: typeof p.pinAsked === 'string' ? p.pinAsked : '',
       };
       out.pending = Array.isArray(own.pending) ? own.pending.slice(-50) : [];
     }
@@ -1599,6 +1613,34 @@
     return best;
   }
 
+  /**
+   * Aperçu de la première fusion si l'on pose `stack` sur `cell` (pendant le glisser), avec exactement les règles
+   * de resolveFrom : pile centrale choisie par pickHub, puis les jetons convergent vers elle de proche en proche.
+   * Renvoie { hub, color, moves: [{ src, dst }] } dans l'ordre des sauts, ou null s'il n'y a rien à fusionner.
+   */
+  function mergePreview(cell, stack) {
+    const saved = cell.stack;
+    cell.stack = stack; // pose fictive, annulée aussitôt
+    try {
+      const color = topColor(stack);
+      const group = sameColorGroup(cell, color);
+      if (group.length < 2) return null;
+      const hub = pickHub(group, cell);
+      const parent = new Map([[hub, null]]);
+      const order = [hub];
+      for (let i = 0; i < order.length; i++) {
+        for (const n of order[i].nb) {
+          if (!parent.has(n) && group.includes(n)) { parent.set(n, order[i]); order.push(n); }
+        }
+      }
+      const moves = [];
+      for (let i = order.length - 1; i > 0; i--) moves.push({ src: order[i], dst: parent.get(order[i]) });
+      return { hub, color, moves };
+    } finally {
+      cell.stack = saved;
+    }
+  }
+
   async function resolveFrom(startCells, gen) {
     let chain = 0;
     const queue = [];
@@ -1832,7 +1874,10 @@
         extra: state.mode === 'daily' ? { log: state.dailyLog } : null,
       }).then(r => { if (Net.enabled() && gen === state.gen) setWorld(worldMessage(r, tag, false)); });
     }
-    after(450, () => showModal({
+    const topTag = toolsTag();
+    const topKey = state.mode === 'daily' ? `${state.dailyDate || todayKey()}:${topTag}` : `all:${topTag}`;
+    const topBoard = state.mode;
+    const open = () => showModal({
       icon: isRecord ? '🏆' : m.icon,
       title: isRecord ? 'Nouveau record !' : 'Partie terminée',
       text: `${why}<br>Score : <b>${state.score}</b>${extra}<br>` +
@@ -1840,9 +1885,11 @@
         (rec.bestCombo >= 2 ? ` · meilleur combo ×${rec.bestCombo}` : '') + worldLineHtml(),
       buttons: [
         { label: state.mode === 'daily' ? 'Rejouer le défi' : 'Rejouer', primary: true, onClick: () => startLevel(1) },
+        ...(Net.enabled() ? [{ label: '🏆 Top 10', onClick: () => showBoardTop(topBoard, topKey, `${m.name} (${TAG_LABEL[topTag]})`, open) }] : []),
         { label: 'Menu', onClick: () => { hideModal(); showHome(); } },
       ],
-    }));
+    });
+    after(450, open);
   }
 
   /* =====================================================================
@@ -1945,7 +1992,9 @@
     setWorld(Net.enabled() ? '🌍 Envoi au classement…' : '');
     submitScore({ board: 'level', bkey: `${state.diff}:${state.level}:${tag}`, score: state.score, combo: state.levelBestCombo, turns: state.moveCount })
       .then(r => { if (Net.enabled() && gen === state.gen) setWorld(worldMessage(r, tag, true)); });
-    after(500, () => showModal({
+    const lvlKey = `${state.diff}:${state.level}:${tag}`;
+    const lvlTitle = `Niveau ${state.level} · ${diff().name}`;
+    const open = () => showModal({
       icon: '🏆',
       title: 'Niveau terminé !',
       text: `<span style="font-size:26px;color:#ffd84d;letter-spacing:4px">${'★'.repeat(stars)}${'☆'.repeat(3 - stars)}</span><br>` +
@@ -1954,9 +2003,11 @@
         `Prochain objectif : <b>${goalFor(state.level + 1)}</b>` + worldLineHtml(),
       buttons: [
         { label: 'Niveau suivant ▶', primary: true, onClick: () => startLevel(state.level + 1) },
+        ...(Net.enabled() ? [{ label: '🏆 Top 10 du niveau', onClick: () => showBoardTop('level', lvlKey, lvlTitle, open) }] : []),
         { label: 'Menu des niveaux', onClick: () => { hideModal(); showHome(); } },
       ],
-    }));
+    });
+    after(500, open);
   }
 
   function gameOver() {
@@ -2179,6 +2230,9 @@
     $('homeFx').textContent = save.lowFx ? '⚡ Effets réduits' : '✨ Effets complets';
     $('homeFx').title = 'Moins de particules et une résolution plus basse, pour les téléphones modestes';
     $('prefPseudo').textContent = save.profile.pseudo ? `👤 Pseudo : ${save.profile.pseudo}` : '👤 Choisir un pseudo';
+    $('prefPin').textContent = save.profile.hasPin ? '🔐 Code PIN : défini (changer)' : '🔐 Créer mon code PIN';
+    $('prefPin').hidden = !save.profile.pseudo || !Net.enabled();
+    $('prefLogin').hidden = !Net.enabled();
     $('btnResetProgress').textContent = `Effacer la progression du mode ${diff().name}…`;
     $('homeTag').textContent = save.profile.pseudo ? `Salut ${save.profile.pseudo} ! Trie, enchaîne, explose.` : 'Trie, enchaîne, explose.';
   }
@@ -2239,7 +2293,8 @@
       });
     }
     const persistDb = () => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (_) { /* ignore */ } };
-    const auth = (id, secret) => db.players.find(p => p.id === id && p.secret === secret);
+    const auth = (id, secret) => db.players.find(p => p.id === id && (p.secret === secret || (p.devices || []).includes(secret)));
+    const weakPin = pin => !/^[0-9]{4,8}$/.test(pin) || /^(.)+$/.test(pin) || '0123456789'.includes(pin) || '9876543210'.includes(pin);
     const pseudoOf = id => (db.players.find(p => p.id === id) || {}).pseudo || '?';
     const bestPerPlayer = (board, key, field = 'score') => {
       const best = new Map();
@@ -2283,6 +2338,39 @@
         return bestPerPlayer(p_board, p_key).slice(0, p_limit)
           .map((s, i) => ({ rank: i + 1, pseudo: pseudoOf(s.player_id), score: s.score, combo: s.combo }));
       },
+      get_top_combo({ p_board, p_key, p_limit }) {
+        return bestPerPlayer(p_board, p_key, 'combo').slice(0, p_limit)
+          .map((s, i) => ({ rank: i + 1, pseudo: pseudoOf(s.player_id), score: s.score, combo: s.combo }));
+      },
+      set_pin({ p_player, p_secret, p_pin }) {
+        const p = auth(p_player, p_secret);
+        if (!p) return { ok: false, error: 'auth' };
+        if (weakPin(p_pin)) return { ok: false, error: 'weak' };
+        p.pin = p_pin;
+        p.fails = 0;
+        p.lockedUntil = 0;
+        return { ok: true };
+      },
+      login_pseudo({ p_pseudo, p_pin }) {
+        if (!/^[0-9]{4,8}$/.test(p_pin || '')) return { ok: false, error: 'badpin' };
+        const p = db.players.find(x => x.pseudo.toLowerCase() === String(p_pseudo).trim().toLowerCase());
+        if (!p) return { ok: false, error: 'unknown' };
+        if (!p.pin) return { ok: false, error: 'nopin' };
+        if (p.lockedUntil > Date.now()) return { ok: false, error: 'locked', wait: Math.ceil((p.lockedUntil - Date.now()) / 1000) };
+        if (p.pin !== p_pin) {
+          p.fails = (p.fails || 0) + 1;
+          if (p.fails >= 5) { p.fails = 0; p.lockedUntil = Date.now() + 900000; return { ok: false, error: 'locked', wait: 900 }; }
+          return { ok: false, error: 'badpin', left: 5 - p.fails };
+        }
+        p.fails = 0;
+        const secret = Math.random().toString(36).slice(2);
+        p.devices = [...(p.devices || []), secret].slice(-10);
+        return { ok: true, player_id: p.id, secret, pseudo: p.pseudo };
+      },
+      get_profile({ p_player, p_secret }) {
+        const p = auth(p_player, p_secret);
+        return p ? { ok: true, pseudo: p.pseudo, has_pin: !!p.pin } : { ok: false, error: 'auth' };
+      },
       get_my_rank({ p_player, p_board, p_key }) {
         const list = bestPerPlayer(p_board, p_key);
         const i = list.findIndex(s => s.player_id === p_player);
@@ -2319,6 +2407,13 @@
     return !BAD_WORDS.some(w => plain.includes(w));
   }
 
+  /** Code PIN accepté : 4 à 8 chiffres, ni tous identiques (0000), ni une suite (1234, 4321). Même règle que le serveur. */
+  const validPin = pin => /^[0-9]{4,8}$/.test(pin) && !/^(.)\1+$/.test(pin) &&
+    !'0123456789'.includes(pin) && !'9876543210'.includes(pin);
+  const PIN_RULE = 'Le code PIN : 4 à 8 chiffres, pas 0000 ni 1234.';
+  const pinInputHtml = (id, placeholder) =>
+    `<input id="${id}" class="pseudoInput pinInput" maxlength="8" inputmode="numeric" autocomplete="off" placeholder="${placeholder}">`;
+
   /** Enregistre le pseudo sur le serveur s'il ne l'est pas encore. Renvoie true si le joueur est identifié. */
   async function ensureRegistered() {
     const p = save.profile;
@@ -2328,7 +2423,9 @@
     if (r && r.ok) {
       p.playerId = r.player_id;
       p.secret = r.secret;
+      p.hasPin = false;
       persist();
+      await sendPendingPin();
       return true;
     }
     if (r && r.error === 'taken') { // choisi hors ligne puis pris entre-temps : on redemande
@@ -2339,22 +2436,83 @@
     return false;
   }
 
+  /** Code PIN choisi hors ligne à la création du pseudo : envoyé dès que le joueur est inscrit. */
+  async function sendPendingPin() {
+    const p = save.profile;
+    if (!p.pinPending || !p.playerId) return;
+    try {
+      const r = await Net.rpc('set_pin', { p_player: p.playerId, p_secret: p.secret, p_pin: p.pinPending });
+      if (r && (r.ok || r.error === 'weak')) {
+        p.hasPin = !!r.ok;
+        p.pinPending = '';
+        persist();
+      }
+    } catch (_) { /* hors ligne : on réessaiera */ }
+  }
+
+  /** L'appareil n'est plus reconnu par le serveur (déconnecté) : on repart sans identité. */
+  function lostIdentity() {
+    const old = save.profile.pseudo;
+    save.profile = { pseudo: '', playerId: '', secret: '', later: false, hasPin: null, pinPending: '', pinAsked: '' };
+    persist();
+    renderHome();
+    if (!state.modalOpen) {
+      askPseudo(true, old ? `Cet appareil n’est plus connecté à « ${old} ». Utilise « J’ai déjà un pseudo » avec ton code PIN.` : '');
+    }
+  }
+
+  /**
+   * Au lancement : met à jour le pseudo (il a pu être changé sur un autre appareil) et vérifie s'il a un code PIN.
+   * Les joueurs inscrits avant la version 1.1 n'en ont pas : on les invite (une fois par jour au plus) à le créer.
+   */
+  async function syncProfile() {
+    const p = save.profile;
+    if (!Net.enabled() || !p.playerId) return;
+    let r;
+    try { r = await Net.rpc('get_profile', { p_player: p.playerId, p_secret: p.secret }); } catch (_) { return; }
+    if (!r) return;
+    if (!r.ok) { if (r.error === 'auth') lostIdentity(); return; }
+    p.pseudo = r.pseudo;
+    p.hasPin = !!r.has_pin;
+    persist();
+    renderHome();
+    if (p.pinPending) await sendPendingPin();
+    if (!p.hasPin && p.pinAsked !== todayKey() && !state.modalOpen) {
+      p.pinAsked = todayKey();
+      persist();
+      showModal({
+        icon: '🔐',
+        title: 'Protège ton pseudo',
+        text: `Crée un code PIN pour retrouver « <b>${esc(p.pseudo)}</b> » sur tes autres appareils (téléphone, tablette, PC).<br>` +
+          '<small>Sans code, ce pseudo reste attaché à cet appareil seulement.</small>',
+        buttons: [
+          { label: 'Créer mon code', primary: true, onClick: () => askPin() },
+          { label: 'Plus tard', onClick: () => hideModal() },
+        ],
+      });
+    }
+  }
+
   /** Fenêtre de choix du pseudo (au premier lancement, ou depuis les préférences). */
   function askPseudo(firstTime, message = '') {
     const current = save.profile.pseudo;
+    const isNew = !save.profile.playerId; // nouveau pseudo : on demande aussi le code PIN
+    const buttons = [{ label: firstTime ? 'C’est parti !' : 'Valider', primary: true, keep: true, onClick: () => submitPseudo() }];
+    if (isNew && Net.enabled()) buttons.push({ label: 'J’ai déjà un pseudo', onClick: () => askLogin(firstTime) });
+    buttons.push({ label: firstTime ? 'Plus tard' : 'Annuler', onClick: () => { if (firstTime) { save.profile.later = true; persist(); } hideModal(); } });
     showModal({
       icon: '👤',
       title: firstTime ? 'Bienvenue !' : 'Ton pseudo',
       text: (firstTime ? 'Choisis un pseudo pour apparaître dans les classements.<br>' : 'Il apparaît dans les classements.<br>') +
         `<input id="pseudoInput" class="pseudoInput" maxlength="16" autocomplete="off" placeholder="3 à 16 caractères" value="${esc(current)}">` +
+        (isNew ? pinInputHtml('pinInput', 'Code PIN (4 à 8 chiffres)') +
+          '<small class="pinHelp">Note-le bien : il te servira à retrouver ton pseudo sur un autre appareil.</small>' : '') +
         `<span id="pseudoErr" class="pseudoErr">${esc(message)}</span>`,
-      buttons: [
-        { label: firstTime ? 'C’est parti !' : 'Valider', primary: true, keep: true, onClick: () => submitPseudo() },
-        { label: firstTime ? 'Plus tard' : 'Annuler', onClick: () => { if (firstTime) { save.profile.later = true; persist(); } hideModal(); } },
-      ],
+      buttons,
     });
     const input = $('pseudoInput');
-    input.addEventListener('keydown', e => { if (e.key === 'Enter') submitPseudo(); });
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') { if (isNew) $('pinInput').focus(); else submitPseudo(); } });
+    if (isNew) $('pinInput').addEventListener('keydown', e => { if (e.key === 'Enter') submitPseudo(); });
     setTimeout(() => input.focus(), 50);
   }
 
@@ -2362,14 +2520,17 @@
   async function submitPseudo() {
     if (pseudoBusy) return;
     const input = $('pseudoInput');
+    const pinEl = $('pinInput');
     const err = $('pseudoErr');
     const wanted = input.value.trim();
+    const pin = pinEl ? pinEl.value.trim() : '';
     if (!validPseudo(wanted)) {
       err.textContent = 'Entre 3 et 16 caractères (lettres, chiffres, espace, . _ -), sans grossièreté.';
       return;
     }
+    if (pinEl && !validPin(pin)) { err.textContent = PIN_RULE; pinEl.focus(); return; }
     const p = save.profile;
-    if (wanted === p.pseudo) { hideModal(); return; }
+    if (wanted === p.pseudo && !pinEl) { hideModal(); return; }
     if (Net.enabled()) {
       pseudoBusy = true;
       err.textContent = 'Vérification…';
@@ -2379,12 +2540,13 @@
           : await Net.rpc('claim_pseudo', { p_pseudo: wanted });
         if (!r.ok) {
           err.textContent = r.error === 'taken' ? `« ${wanted} » est déjà pris. Essaie par exemple ${wanted}${randInt(2, 99)}.`
+            : r.error === 'auth' ? 'Cet appareil n’est plus connecté à ton pseudo.'
             : 'Ce pseudo n’est pas accepté, choisis-en un autre.';
           return;
         }
-        if (!p.playerId) { p.playerId = r.player_id; p.secret = r.secret; }
+        if (!p.playerId) { p.playerId = r.player_id; p.secret = r.secret; p.hasPin = false; }
       } catch (_) {
-        // Hors ligne : le pseudo est gardé et sera enregistré à la prochaine connexion
+        // Hors ligne : le pseudo (et son code) sont gardés et seront enregistrés à la prochaine connexion
         if (p.playerId) { err.textContent = 'Pas de connexion : réessaie plus tard.'; return; }
       } finally {
         pseudoBusy = false;
@@ -2392,10 +2554,127 @@
     }
     p.pseudo = wanted;
     p.later = false;
+    if (pinEl) p.pinPending = pin;
     persist();
     hideModal();
     renderHome();
+    await sendPendingPin();
+    renderHome();
     flushPending();
+  }
+
+  /** Retrouver son pseudo sur cet appareil : pseudo + code PIN. */
+  function askLogin(firstTime = false) {
+    const p = save.profile;
+    const warn = p.pseudo && p.hasPin !== true
+      ? `<small class="pinHelp">⚠️ Ton pseudo actuel « ${esc(p.pseudo)} » n’a pas de code PIN : tu ne pourras plus le retrouver.</small>` : '';
+    showModal({
+      icon: '🔑',
+      title: 'J’ai déjà un pseudo',
+      text: 'Entre ton pseudo et ton code PIN pour le retrouver sur cet appareil.<br>' +
+        '<input id="loginPseudo" class="pseudoInput" maxlength="16" autocomplete="off" placeholder="Ton pseudo">' +
+        pinInputHtml('loginPin', 'Ton code PIN') + warn +
+        '<span id="loginErr" class="pseudoErr"></span>' +
+        '<small class="pinHelp">Ta progression des niveaux reste propre à chaque appareil ; ce sont tes scores en ligne qui te suivent.</small>',
+      buttons: [
+        { label: 'Me connecter', primary: true, onClick: () => submitLogin() },
+        { label: 'Retour', onClick: () => (p.playerId ? hideModal() : askPseudo(firstTime)) },
+      ],
+    });
+    $('loginPseudo').addEventListener('keydown', e => { if (e.key === 'Enter') $('loginPin').focus(); });
+    $('loginPin').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
+    setTimeout(() => $('loginPseudo').focus(), 50);
+  }
+
+  async function submitLogin() {
+    if (pseudoBusy) return;
+    const err = $('loginErr');
+    const pseudo = $('loginPseudo').value.trim();
+    const pin = $('loginPin').value.trim();
+    if (!pseudo || !/^[0-9]{4,8}$/.test(pin)) { err.textContent = 'Entre ton pseudo et ton code (4 à 8 chiffres).'; return; }
+    pseudoBusy = true;
+    err.textContent = 'Connexion…';
+    try {
+      const r = await Net.rpc('login_pseudo', { p_pseudo: pseudo, p_pin: pin });
+      if (!r.ok) {
+        err.textContent = {
+          unknown: `Aucun joueur ne s’appelle « ${pseudo} ».`,
+          nopin: 'Ce pseudo n’a pas encore de code PIN : crée-le depuis ton appareil habituel (⚙️ → Code PIN).',
+          badpin: r.left ? `Code incorrect (encore ${r.left} essai${r.left > 1 ? 's' : ''}).` : 'Code incorrect.',
+          locked: `Trop d’erreurs : réessaie dans ${Math.max(1, Math.ceil((r.wait || 900) / 60))} min.`,
+        }[r.error] || 'Connexion refusée.';
+        return;
+      }
+      // Les scores en attente de l'ancienne identité partent d'abord sous son nom
+      if (save.profile.playerId && save.profile.playerId !== r.player_id) await flushPending();
+      Object.assign(save.profile, { pseudo: r.pseudo, playerId: r.player_id, secret: r.secret, later: false, hasPin: true, pinPending: '' });
+      persist();
+      showModal({
+        icon: '✅',
+        title: `Salut ${r.pseudo} !`,
+        text: 'Tu es connecté sur cet appareil. Tes prochains scores iront à ce pseudo.',
+        buttons: [{ label: 'Super', primary: true, onClick: () => hideModal() }],
+      });
+      renderHome();
+      if (homeTab === 'ranks') loadRanks();
+      flushPending();
+    } catch (_) {
+      err.textContent = 'Pas de connexion : réessaie plus tard.';
+    } finally {
+      pseudoBusy = false;
+    }
+  }
+
+  /** Créer ou changer le code PIN du pseudo actuel. */
+  function askPin() {
+    const p = save.profile;
+    showModal({
+      icon: '🔐',
+      title: p.hasPin ? 'Changer mon code PIN' : 'Créer mon code PIN',
+      text: `Avec ce code, tu retrouves « <b>${esc(p.pseudo)}</b> » sur ton téléphone, ta tablette ou ton PC ` +
+        '(bouton « J’ai déjà un pseudo »).' + pinInputHtml('pinInput', '4 à 8 chiffres') +
+        '<small class="pinHelp">Note-le bien, il n’est affiché nulle part ailleurs.</small>' +
+        '<span id="pseudoErr" class="pseudoErr"></span>',
+      buttons: [
+        { label: 'Enregistrer', primary: true, onClick: () => submitPin() },
+        { label: 'Annuler', onClick: () => hideModal() },
+      ],
+    });
+    $('pinInput').addEventListener('keydown', e => { if (e.key === 'Enter') submitPin(); });
+    setTimeout(() => $('pinInput').focus(), 50);
+  }
+
+  async function submitPin() {
+    if (pseudoBusy) return;
+    const pin = $('pinInput').value.trim();
+    const err = $('pseudoErr');
+    if (!validPin(pin)) { err.textContent = PIN_RULE; return; }
+    pseudoBusy = true;
+    err.textContent = 'Enregistrement…';
+    try {
+      if (!(await ensureRegistered())) { err.textContent = 'Pas de connexion : réessaie plus tard.'; return; }
+      const p = save.profile;
+      const r = await Net.rpc('set_pin', { p_player: p.playerId, p_secret: p.secret, p_pin: pin });
+      if (!r.ok) {
+        if (r.error === 'auth') { hideModal(); lostIdentity(); return; }
+        err.textContent = PIN_RULE;
+        return;
+      }
+      p.hasPin = true;
+      p.pinPending = '';
+      persist();
+      renderHome();
+      showModal({
+        icon: '🔐',
+        title: 'Code PIN enregistré',
+        text: `Sur un autre appareil : « J’ai déjà un pseudo », puis « <b>${esc(p.pseudo)}</b> » et ton code.`,
+        buttons: [{ label: 'Compris', primary: true, onClick: () => hideModal() }],
+      });
+    } catch (_) {
+      err.textContent = 'Pas de connexion : réessaie plus tard.';
+    } finally {
+      pseudoBusy = false;
+    }
   }
 
   /* ---------------- Envoi des scores (avec file d'attente hors ligne) ---------------- */
@@ -2418,6 +2697,7 @@
           p_score: e.score, p_combo: e.combo, p_turns: e.turns, p_extra: e.extra || null,
         });
         if (r && r.error === 'rate') break; // trop d'envois d'un coup : on réessaiera plus tard
+        if (r && r.error === 'auth') { lostIdentity(); break; } // appareil déconnecté : les scores attendent la reconnexion
         save.pending.shift();
         persist();
         if (e === target) result = r;
@@ -2448,6 +2728,56 @@
   }
   function worldLineHtml() {
     return Net.enabled() ? `<span class="worldLine" id="worldLine">${esc(worldText)}</span>` : '';
+  }
+
+  /* ---------------- Fenêtre « top 10 » d'un tableau (points et combo) ---------------- */
+  // Ouverte depuis l'onglet Classements (records par niveau) ou depuis les fenêtres de fin de partie.
+  // onBack : rouvre la fenêtre d'où l'on vient (fin de niveau) ; sinon le bouton ferme simplement.
+  let topReq = 0;
+  async function showBoardTop(board, key, title, onBack = null) {
+    const req = ++topReq;
+    let field = 'score';
+    let data = null;
+    showModal({
+      icon: '🏆',
+      title,
+      text: `<div class="chips" id="topChips"><button class="chip active" data-f="score">Points</button><button class="chip" data-f="combo">Combo</button></div>` +
+        '<div id="topList" class="rankList topList"><div class="rankEmpty">Chargement…</div></div>',
+      buttons: [{ label: onBack ? '← Retour' : 'Fermer', primary: true, onClick: () => (onBack ? onBack() : hideModal()) }],
+    });
+    const me = save.profile.pseudo.toLowerCase();
+    const draw = () => {
+      const list = $('topList');
+      if (!list || req !== topReq) return;
+      if (!data) { list.innerHTML = '<div class="rankEmpty">Pas de connexion : classement indisponible pour le moment.</div>'; return; }
+      const rows = field === 'score' ? data.byScore : data.byCombo;
+      let html = rows.map(r => `<div class="rankRow${r.pseudo.toLowerCase() === me ? ' me' : ''}"><span class="pos">${r.rank <= 3 ? ['🥇', '🥈', '🥉'][r.rank - 1] : r.rank}</span>` +
+        `<span class="who">${esc(r.pseudo)}<small>${field === 'score' ? `combo ×${r.combo}` : `${fmtNum(r.score)} pts`}</small></span>` +
+        `<span class="pts">${field === 'score' ? fmtNum(r.score) : '×' + r.combo}</span></div>`).join('');
+      if (!rows.length) html = '<div class="rankEmpty">Personne pour l’instant : sois le premier !</div>';
+      const mine = data.mine;
+      if (field === 'score' && mine && mine.rank && mine.rank > 10) {
+        html += `<div class="rankRow me"><span class="pos">${mine.rank}</span><span class="who">${esc(save.profile.pseudo)}<small>sur ${mine.total} joueurs</small></span><span class="pts">${fmtNum(mine.score)}</span></div>`;
+      }
+      list.innerHTML = html;
+    };
+    $('topChips').addEventListener('click', e => {
+      const b = e.target.closest('.chip');
+      if (!b) return;
+      Sfx.click();
+      field = b.dataset.f;
+      for (const c of $('topChips').children) c.classList.toggle('active', c === b);
+      draw();
+    });
+    try {
+      const [byScore, byCombo, mine] = await Promise.all([
+        Net.rpc('get_top', { p_board: board, p_key: key, p_limit: 10 }),
+        Net.rpc('get_top_combo', { p_board: board, p_key: key, p_limit: 10 }),
+        save.profile.playerId ? Net.rpc('get_my_rank', { p_player: save.profile.playerId, p_board: board, p_key: key }) : Promise.resolve(null),
+      ]);
+      data = { byScore: byScore || [], byCombo: byCombo || [], mine };
+    } catch (_) { data = null; }
+    draw();
   }
 
   /* ---------------- Onglet Classements ---------------- */
@@ -2481,6 +2811,16 @@
     loadRanks();
   });
 
+  // Appui sur un niveau : son top 10 (points et combo)
+  $('rankList').addEventListener('click', e => {
+    const row = e.target.closest('.rankRow.tap');
+    if (!row) return;
+    Sfx.init(); Sfx.click();
+    const lvl = Number(row.dataset.level);
+    showBoardTop('level', `${rankView.diff}:${lvl}:${rankView.tag}`,
+      `Niveau ${lvl} · ${DIFFICULTIES[rankView.diff].name}`);
+  });
+
   async function loadRanks() {
     const today = todayKey();
     if (!rankView.day) rankView.day = today;
@@ -2498,7 +2838,8 @@
     } else {
       $('rankHead').innerHTML = `<span>Top 10 de tous les temps</span>`;
     }
-    note.textContent = save.profile.pseudo ? `Tu joues sous le pseudo « ${save.profile.pseudo} ».` : 'Choisis un pseudo dans ⚙️ pour apparaître ici.';
+    note.textContent = (save.profile.pseudo ? `Tu joues sous le pseudo « ${save.profile.pseudo} ».` : 'Choisis un pseudo dans ⚙️ pour apparaître ici.') +
+      (board === 'level' ? ' Touche un niveau pour voir son top 10.' : '');
     if (!Net.enabled()) {
       list.innerHTML = '<div class="rankEmpty">Les classements en ligne arrivent bientôt : le serveur n’est pas encore branché.</div>';
       return;
@@ -2510,7 +2851,7 @@
         const to = Math.max(20, save.progress[rankView.diff].unlocked + 5);
         const rows = await Net.rpc('get_level_records', { p_diff: rankView.diff, p_tag: rankView.tag, p_from: 1, p_to: Math.min(to, 2000) });
         if (req !== rankReq) return;
-        list.innerHTML = rows.length ? rows.map(r => `<div class="rankRow lvl"><span class="pos">Niv. ${r.level}</span>` +
+        list.innerHTML = rows.length ? rows.map(r => `<div class="rankRow lvl tap" role="button" tabindex="0" data-level="${r.level}"><span class="pos">Niv. ${r.level}</span>` +
           `<span class="who">${fmtNum(r.score)} pts — ${esc(r.score_pseudo)}<small>combo ×${r.combo} — ${esc(r.combo_pseudo)}</small></span></div>`).join('')
           : '<div class="rankEmpty">Aucun record pour l’instant : à toi de jouer !</div>';
         return;
@@ -2560,6 +2901,11 @@
   $('btnPrefs').addEventListener('click', () => { Sfx.init(); Sfx.click(); homeTab = homeTab === 'prefs' ? 'levels' : 'prefs'; renderHome(); applyTab(); });
   $('prefsBack').addEventListener('click', () => { Sfx.init(); Sfx.click(); homeTab = 'levels'; applyTab(); scrollToCurrentLevel(); });
   $('prefPseudo').addEventListener('click', () => { Sfx.init(); Sfx.click(); askPseudo(false); });
+  $('prefPin').addEventListener('click', () => {
+    Sfx.init(); Sfx.click();
+    if (save.profile.pseudo) askPin(); else askPseudo(false);
+  });
+  $('prefLogin').addEventListener('click', () => { Sfx.init(); Sfx.click(); askLogin(false); });
 
   // Croix « Quitter » : seulement dans l'appli Android, qui expose window.HexaApp.quit()
   if (window.HexaApp && typeof window.HexaApp.quit === 'function') {
@@ -2884,30 +3230,20 @@
       c.restore();
     }
 
-    // Aperçu pendant le glisser : les voisins qui vont fusionner s'illuminent, reliés à la case visée
-    if (drag && drag.target && !drag.ret) {
-      const col = topColor(drag.stack);
-      for (const n of drag.target.nb) {
-        if (!n.stack.length || topColor(n.stack) !== col) continue;
-        const top = n.cy - n.stack.length * L.th;
+    // Aperçu pendant le glisser : les piles qui vont fusionner s'illuminent (le sens est donné par les flèches)
+    const preview = currentPreview();
+    if (preview) {
+      for (const cell of new Set(preview.moves.flatMap(m => [m.src, m.dst]))) {
+        if (cell === drag.target) continue;
+        const top = cell.cy - cell.stack.length * L.th;
+        const isHub = cell === preview.hub;
         c.save();
         c.globalCompositeOperation = 'lighter';
-        hexPath(c, L.tile * (1.02 + 0.06 * pulse), n.cx, top);
-        c.fillStyle = `rgba(255, 255, 255, ${0.12 + 0.12 * pulse})`;
+        hexPath(c, L.tile * (1.02 + 0.06 * pulse), cell.cx, top);
+        c.fillStyle = `rgba(255, 255, 255, ${(isHub ? 0.2 : 0.1) + 0.12 * pulse})`;
         c.fill();
-        c.lineWidth = Math.max(2, L.hex * 0.08);
-        c.strokeStyle = PALETTE[col].light;
-        c.stroke();
-        c.restore();
-        c.save();
-        c.setLineDash([6, 6]);
-        c.lineDashOffset = -now / 30;
-        c.strokeStyle = PALETTE[col].light;
-        c.globalAlpha = 0.85;
-        c.lineWidth = 3;
-        c.beginPath();
-        c.moveTo(n.cx, top);
-        c.lineTo(drag.target.cx, drag.target.cy);
+        c.lineWidth = Math.max(2, L.hex * (isHub ? 0.11 : 0.07));
+        c.strokeStyle = PALETTE[preview.color].light;
         c.stroke();
         c.restore();
       }
@@ -2988,6 +3324,87 @@
       drawStack(c, 0, 0, d.stack, true);
       c.restore();
     }
+  }
+
+  // Aperçu recalculé seulement quand la case visée ou la pile tenue change
+  let previewCache = { target: null, stack: null, value: null };
+  function currentPreview() {
+    if (!drag || !drag.target || drag.ret || state.busy) return null;
+    if (previewCache.target !== drag.target || previewCache.stack !== drag.stack) {
+      previewCache = { target: drag.target, stack: drag.stack, value: mergePreview(drag.target, drag.stack) };
+    }
+    return previewCache.value;
+  }
+
+  /** Haut d'une pile, en tenant compte de la pile tenue au-dessus de la case visée. */
+  function previewTop(cell) {
+    const n = cell === drag.target ? drag.stack.length : cell.stack.length;
+    return { x: cell.cx, y: cell.cy - n * L.th - L.th * 0.5 };
+  }
+
+  /**
+   * Flèches « qui va où » : de chaque pile qui se vide vers celle qui reçoit ses jetons.
+   * Répond à la question « ma pile part chez la voisine, ou la voisine vient sur la mienne ? » avant de lâcher.
+   */
+  function drawMergeArrows(c) {
+    const preview = currentPreview();
+    if (!preview) return;
+    const col = PALETTE[preview.color];
+    const k = L.hex;
+    preview.moves.forEach((m, i) => {
+      const a = previewTop(m.src);
+      const b = previewTop(m.dst);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len, uy = dy / len;
+      // Extrémités raccourcies et courbe en arc (comme le saut des jetons)
+      const sx = a.x + ux * k * 0.28, sy = a.y + uy * k * 0.28;
+      const ex = b.x - ux * k * 0.22, ey = b.y - uy * k * 0.22;
+      const cx = (sx + ex) / 2, cy = (sy + ey) / 2 - Math.min(k * 0.9, len * 0.35);
+      // Petite pulsation décalée d'une flèche à l'autre : on lit l'ordre de la cascade
+      const t = ((now / 900) + i * 0.18) % 1;
+      const w = Math.max(4, k * 0.18);
+      // Direction de la pointe = tangente de la courbe à l'arrivée
+      const tx = ex - cx, ty = ey - cy;
+      const tl = Math.hypot(tx, ty) || 1;
+      const hx = tx / tl, hy = ty / tl;
+      const head = Math.max(13, k * 0.6);
+      const bx = ex - hx * head * 0.8, by = ey - hy * head * 0.8;
+      c.save();
+      c.lineCap = 'round';
+      c.lineJoin = 'round';
+      // Contour sombre puis trait clair : lisible sur toutes les couleurs
+      c.shadowColor = col.light;
+      c.shadowBlur = k * 0.25;
+      for (const [stroke, width] of [['rgba(20, 10, 40, 0.9)', w + 5], [col.light, w]]) {
+        c.strokeStyle = stroke;
+        c.lineWidth = width;
+        c.beginPath();
+        c.moveTo(sx, sy);
+        c.quadraticCurveTo(cx, cy, bx, by);
+        c.stroke();
+      }
+      c.beginPath();
+      c.moveTo(ex, ey);
+      c.lineTo(bx - hy * head * 0.55, by + hx * head * 0.55);
+      c.lineTo(bx + hy * head * 0.55, by - hx * head * 0.55);
+      c.closePath();
+      c.lineWidth = 5;
+      c.strokeStyle = 'rgba(20, 10, 40, 0.9)';
+      c.stroke();
+      c.fillStyle = col.light;
+      c.fill();
+      // Jeton lumineux qui glisse le long de la flèche
+      const q = easeInOutQuad(t);
+      const px = (1 - q) * (1 - q) * sx + 2 * (1 - q) * q * cx + q * q * bx;
+      const py = (1 - q) * (1 - q) * sy + 2 * (1 - q) * q * cy + q * q * by;
+      c.globalAlpha = Math.sin(t * Math.PI);
+      c.fillStyle = '#ffffff';
+      c.beginPath();
+      c.ellipse(px, py, w * 0.9, w * 0.9 * ISO_SCALE_Y, 0, 0, Math.PI * 2);
+      c.fill();
+      c.restore();
+    });
   }
 
   function drawDrag(c) {
@@ -3143,6 +3560,7 @@
 
     drawDock(c);
     drawDrag(c);
+    drawMergeArrows(c);
     drawFx(c);
   }
 
@@ -3389,8 +3807,10 @@
   if (!save.profile.pseudo && !save.profile.later) setTimeout(() => askPseudo(true), 700);
   // Scores restés en attente (joués hors ligne) : envoyés dès que possible
   flushPending();
-  window.addEventListener('online', () => flushPending());
-  if (MOCK) window.__hexa = { state, save }; // accès de test, seulement en mode démo
+  // Pseudo à jour (changé ailleurs ?) et invitation à créer un code PIN s'il n'en a pas
+  setTimeout(syncProfile, 900);
+  window.addEventListener('online', () => { flushPending(); syncProfile(); });
+  if (MOCK) window.__hexa = { state, save, L, mergePreview }; // accès de test, seulement en mode démo
 })();
 </script>
 <script>
