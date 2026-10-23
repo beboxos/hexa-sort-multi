@@ -221,6 +221,7 @@
   .secTitle { margin: 4px 0 10px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; opacity: .7; font-weight: 800; }
   #puzzleGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 10px; }
   #puzzleResume { margin: 0 0 10px; }
+  #updateBar { width: 100%; margin: -6px 0 12px; font-size: 14px; padding: 10px; }
   #puzzleBack { margin-top: 12px; }
   #levelGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 10px; }
   .lvlTile {
@@ -364,10 +365,10 @@
       <polygon points="50,6 78,13 78,20 50,27 22,20 22,13" fill="#7a35d1"/>
       <polygon points="50,2 78,9 50,16 22,9" fill="#a65cff"/>
     </svg>
-    <button id="btnQuit" class="cornerBtn left" aria-label="Quitter le jeu" hidden>✕</button>
     <button id="btnPrefs" class="cornerBtn right" aria-label="Préférences">⚙️</button>
     <h1>Hexa <span>Sort</span><small class="multi">MULTI</small><small class="ver" id="gameVersion"></small></h1>
     <p class="tag" id="homeTag">Trie, enchaîne, explose.</p>
+    <button id="updateBar" class="mBtn primary" hidden></button>
     <div id="homeTabs" role="tablist" aria-label="Type de partie">
       <button id="tabLevels" class="homeTab active" role="tab">🗺️ Niveaux</button>
       <button id="tabModes" class="homeTab" role="tab">⚡ Modes</button>
@@ -401,6 +402,7 @@
       <div class="secTitle">Préférences</div>
       <div class="prefList">
         <button id="prefFaq" class="mBtn">❓ Règles du jeu (FAQ)</button>
+        <button id="prefUpdate" class="mBtn">🔄 Vérifier les mises à jour</button>
         <button id="prefPseudo" class="mBtn"></button>
         <button id="prefPin" class="mBtn"></button>
         <button id="prefLogin" class="mBtn">🔑 J’ai déjà un pseudo (autre appareil)</button>
@@ -507,6 +509,7 @@
           <summary>🏆 Classements, pseudo et code PIN</summary>
           <p>Classements séparés avec et sans outils. Pour les modes : par jour, semaine, mois, année ou depuis toujours,
           aux points ou au combo. Touche un niveau dans Classements → Niveaux pour voir son top 10.</p>
+          <p>Le jeu se met à jour tout seul. S'il affiche une ancienne version, va dans ⚙️ → « Vérifier les mises à jour ».</p>
           <p>Ton <b>code PIN</b> te permet de retrouver ton pseudo, tes niveaux débloqués et tes records sur un autre appareil
           (« J'ai déjà un pseudo »). Note-le bien : personne ne peut te le redonner.</p>
         </details>
@@ -546,7 +549,7 @@
   const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   // Version du jeu : affichée sur l'accueil et lue par android/build-apk.ps1 pour numéroter l'APK.
   // À changer à chaque nouvelle version (une seule source de vérité).
-  const GAME_VERSION = '1.4';
+  const GAME_VERSION = '1.5';
 
   // Serveur des classements (Supabase). Vides tant que le projet n'est pas créé : le jeu fonctionne
   // alors hors ligne. Ajouter « ?mock=1 » à l'adresse simule un serveur local pour tester.
@@ -3709,6 +3712,64 @@
     }
   }
 
+  /* ---------------- Mises à jour du jeu ---------------- */
+  // Le site publie version.json (écrit par web/publish.ps1). Le navigateur ou l'appli Android peuvent garder
+  // une ancienne page (cache, appli restée ouverte) : on compare et on propose de recharger.
+  function isNewerVersion(a, b) {
+    const pa = String(a).split('.').map(Number);
+    const pb = String(b).split('.').map(Number);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const d = (pa[i] || 0) - (pb[i] || 0);
+      if (d) return d > 0;
+    }
+    return false;
+  }
+
+  async function checkUpdate(manual) {
+    let latest = null;
+    try {
+      const res = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
+      if (res.ok) latest = (await res.json()).version;
+    } catch (_) { /* hors ligne, ou copie embarquée de l'appli */ }
+    if (latest && isNewerVersion(latest, GAME_VERSION)) {
+      const bar = $('updateBar');
+      bar.textContent = `🔄 Nouvelle version ${latest} disponible : mettre à jour`;
+      bar.hidden = false;
+      if (manual) forceRefresh();
+      return;
+    }
+    if (!manual) return;
+    showModal({
+      icon: latest ? '✅' : '📡',
+      title: latest ? 'Tu es à jour' : 'Vérification impossible',
+      text: latest ? `Tu as la dernière version (<b>${GAME_VERSION}</b>).`
+        : 'Pas de connexion au site pour l’instant. Tu peux quand même forcer le rechargement.',
+      buttons: [
+        { label: 'OK', primary: true, onClick: () => hideModal() },
+        { label: '🔄 Recharger quand même', onClick: () => forceRefresh() },
+      ],
+    });
+  }
+
+  /** Vide le cache hors ligne du jeu, met à jour le service worker et recharge la page (la sauvegarde reste). */
+  async function forceRefresh() {
+    persist();
+    showModal({ icon: '🔄', title: 'Mise à jour…', text: 'Rechargement du jeu, ta progression est gardée.', buttons: [] });
+    try {
+      const regs = navigator.serviceWorker ? await navigator.serviceWorker.getRegistrations() : [];
+      await Promise.all(regs.map(r => r.update().catch(() => {})));
+    } catch (_) { /* pas de service worker */ }
+    try {
+      if (window.caches) {
+        const keys = await caches.keys();
+        await Promise.all(keys.filter(k => k.startsWith('hexamulti-')).map(k => caches.delete(k)));
+      }
+    } catch (_) { /* pas de cache */ }
+    location.reload();
+  }
+  $('updateBar').addEventListener('click', () => { Sfx.init(); Sfx.click(); forceRefresh(); });
+  $('prefUpdate').addEventListener('click', () => { Sfx.init(); Sfx.click(); checkUpdate(true); });
+
   /* ---------------- Fenêtre de confirmation (remplace window.confirm) ---------------- */
   // danger : pour un effacement, « Annuler » est le bouton mis en avant (un appui réflexe ne détruit rien)
   function confirmBox(title, html, okLabel, onOk, danger = false) {
@@ -3744,14 +3805,6 @@
   });
   $('prefLogin').addEventListener('click', () => { Sfx.init(); Sfx.click(); askLogin(false); });
 
-  // Croix « Quitter » : seulement dans l'appli Android, qui expose window.HexaApp.quit()
-  if (window.HexaApp && typeof window.HexaApp.quit === 'function') {
-    $('btnQuit').hidden = false;
-    $('btnQuit').addEventListener('click', () => {
-      Sfx.init(); Sfx.click();
-      confirmBox('Quitter le jeu ?', 'Ta partie est sauvegardée, tu la retrouveras en revenant.', 'Quitter', () => window.HexaApp.quit());
-    });
-  }
 
   function renderModes() {
     ensureDaily();
@@ -4705,6 +4758,14 @@
   flushPending();
   // Pseudo à jour (changé ailleurs ?) et invitation à créer un code PIN s'il n'en a pas
   setTimeout(syncProfile, 900);
+  // Nouvelle version du site ? (l'appli Android garde la page en mémoire : on vérifie aussi au retour)
+  setTimeout(() => checkUpdate(false), 2500);
+  let lastUpdateCheck = Date.now();
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || Date.now() - lastUpdateCheck < 5 * 60 * 1000) return;
+    lastUpdateCheck = Date.now();
+    checkUpdate(false);
+  });
   window.addEventListener('online', () => { flushPending(); syncProfile(); });  // syncProfile relance aussi la progression
   if (MOCK) { // accès de test, seulement en mode démo
     window.__hexa = { state, save, L, mergePreview, scheduleCloudSave, getPuzzle, startPuzzle, simBoard, simClone, simResolve, dailyRules, resolveFrom,

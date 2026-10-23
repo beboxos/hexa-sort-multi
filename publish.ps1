@@ -45,6 +45,9 @@ $sw = [IO.File]::ReadAllText((Join-Path $web 'sw.js'), [Text.Encoding]::UTF8)
 $sw = [regex]::Replace($sw, "const CACHE = 'hexamulti-[^']*';", "const CACHE = 'hexamulti-$version';")
 [IO.File]::WriteAllText((Join-Path $web 'sw.js'), $sw, $utf8)
 
+# Numéro de la version en ligne : le jeu le compare au sien pour proposer la mise à jour
+[IO.File]::WriteAllText((Join-Path $web 'version.json'), "{ `"version`": `"$version`" }`n", $utf8)
+
 Write-Host "Site préparé : version $version (depuis $Game)"
 
 if ($Push) {
