@@ -219,6 +219,9 @@
   .diffDesc { margin: 0 0 14px; font-size: 12px; opacity: .8; min-height: 2.5em; }
   .homeInfo { margin: 10px 0 14px; font-size: 12px; opacity: .7; }
   .secTitle { margin: 4px 0 10px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; opacity: .7; font-weight: 800; }
+  #puzzleGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 10px; }
+  #puzzleResume { margin: 0 0 10px; }
+  #puzzleBack { margin-top: 12px; }
   #levelGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 10px; }
   .lvlTile {
     aspect-ratio: 1; border-radius: 18px; cursor: pointer; display: flex; flex-direction: column;
@@ -381,6 +384,13 @@
     <div id="panelModes" class="panel">
       <div id="modeList"></div>
     </div>
+    <div id="panelPuzzle" class="panel">
+      <div class="secTitle">🧩 Histoire · Puzzles</div>
+      <p class="homeInfo" id="puzzleInfo"></p>
+      <button id="puzzleResume" class="mBtn primary" hidden></button>
+      <div class="gridWrap"><div id="puzzleGrid"></div></div>
+      <button id="puzzleBack" class="mBtn">← Modes</button>
+    </div>
     <div id="panelRanks" class="panel">
       <div id="rankChips" class="chips" role="tablist" aria-label="Classement"></div>
       <div id="rankHead" class="rankHead"></div>
@@ -482,7 +492,16 @@
           <p><b>Coups comptés</b> : 30 piles, fais le plus gros score.<br>
           <b>Survie</b> : sans fin, des rochers tombent de plus en plus vite ; une collecte voisine les brise.<br>
           <b>Chrono</b> : 90 secondes, +3 s par collecte.<br>
-          <b>Défi du jour</b> : le même plateau et les mêmes piles pour tout le monde, 25 piles.</p>
+          <b>Défi du jour</b> : le même pour tout le monde, mais la formule change chaque jour : nombre de piles ou chrono,
+          mini ou grand plateau, rochers, plus de couleurs, sans outils… La carte du mode annonce la formule du jour.</p>
+        </details>
+        <details>
+          <summary>🧩 Histoire · Puzzles</summary>
+          <p>Des niveaux à résoudre, chapitre par chapitre. Les piles sont <b>imposées</b> et arrivent toujours dans le même
+          ordre : aucun hasard. Certaines cases sont <b>inutilisables</b> (trous sombres), des <b>rochers</b> bloquent des cases
+          (une collecte à côté les brise), et l'objectif peut être un nombre de jetons, ou de jetons d'une seule couleur.</p>
+          <p>Chaque puzzle a été résolu par un joueur automatique : il a donc une solution. ★★★ si tu fais aussi bien que lui
+          (même nombre de piles ou moins), ★★ avec 2 piles de plus.</p>
         </details>
         <details>
           <summary>🏆 Classements, pseudo et code PIN</summary>
@@ -527,7 +546,7 @@
   const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   // Version du jeu : affichée sur l'accueil et lue par android/build-apk.ps1 pour numéroter l'APK.
   // À changer à chaque nouvelle version (une seule source de vérité).
-  const GAME_VERSION = '1.3';
+  const GAME_VERSION = '1.4';
 
   // Serveur des classements (Supabase). Vides tant que le projet n'est pas créé : le jeu fonctionne
   // alors hors ligne. Ajouter « ?mock=1 » à l'adresse simule un serveur local pour tester.
@@ -565,7 +584,23 @@
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   }
-  const rand = () => (state.mode === 'daily' ? seededRandom() : Math.random());
+  const rand = () => (rngOverride ? rngOverride() : state.mode === 'daily' ? seededRandom() : Math.random());
+  // Générateur temporaire (création d'un puzzle) : prioritaire sur le hasard normal tant qu'il est posé
+  let rngOverride = null;
+  function mulberry(seed) {
+    let a = seed | 0;
+    return () => {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function hashStr(str) { // FNV-1a
+    let h = 2166136261;
+    for (const ch of str) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  }
   const randInt = (a, b) => a + Math.floor(rand() * (b - a + 1));
   const pick = arr => arr[Math.floor(Math.random() * arr.length)];  // effets visuels
   const rpick = arr => arr[Math.floor(rand() * arr.length)];        // règles du jeu
@@ -971,8 +1006,55 @@
   };
   const MODE_ORDER = ['moves', 'survival', 'chrono', 'daily'];
   const isSpecial = () => state.mode !== 'levels';
-  const rules = () => (isSpecial() ? MODES[state.mode] : diff());
-  const isFreeCell = c => !c.stack.length && !c.rock;
+  const rules = () => (!isSpecial() ? diff()
+    : state.mode === 'daily' ? dailyRules(state.dailyDate || todayKey())
+    : state.mode === 'puzzle' ? puzzleRules()
+    : MODES[state.mode]);
+  // Partie contre la montre : le Chrono, et certains jours le Défi du jour
+  const isTimed = () => isSpecial() && !!rules().time;
+
+  /*
+   * Défi du jour variable (v1.4) : chaque jour tire sa formule (à partir de la date, donc la même pour
+   * tout le monde) : nombre de piles ou chrono, taille du plateau, couleurs, rochers, outils…
+   * La graine des règles est distincte de celle des piles : les deux restent identiques pour tous.
+   */
+  const DAILY_VARIANTS = [
+    { key: 'classic', name: 'Classique', icon: '🎯', make: () => ({ moves: rpick([20, 25, 30]) }) },
+    { key: 'sprint', name: 'Sprint', icon: '⏱️', make: () => ({ time: rpick([60, 75, 90]) }) },
+    { key: 'quarry', name: 'Carrière', icon: '🪨', make: () => ({ moves: rpick([25, 30]), rocks: randInt(4, 7), hardRocks: randInt(0, 2) }) },
+    { key: 'big', name: 'Grand plateau', icon: '🌐', make: () => ({ radius: 4, moves: rpick([35, 40]), colors: 6, prefill: 0.5 }) },
+    { key: 'mini', name: 'Mini plateau', icon: '🔹', make: () => ({ radius: 2, moves: rpick([15, 18, 20]), colors: 4, prefill: 0.45 }) },
+    { key: 'rainbow', name: 'Arc-en-ciel', icon: '🌈', make: () => ({ moves: rpick([25, 30]), colors: 6 }) },
+    { key: 'bare', name: 'Sans filet', icon: '🚫', make: () => ({ moves: rpick([20, 25]), tools: 0 }) },
+    { key: 'rush', name: 'Course aux rochers', icon: '⚡', make: () => ({ time: rpick([75, 90]), rocks: randInt(3, 5), hardRocks: 0 }) },
+  ];
+  const dailyVariantIndex = date => hashStr('hexa-regles-' + date) % DAILY_VARIANTS.length;
+  const dailyCache = new Map();
+  function dailyRules(date) {
+    if (dailyCache.has(date)) return dailyCache.get(date);
+    // Jamais deux jours de suite la même formule
+    let idx = dailyVariantIndex(date);
+    if (idx === dailyVariantIndex(shiftDay(date, -1))) idx = (idx + 1) % DAILY_VARIANTS.length;
+    const v = DAILY_VARIANTS[idx];
+    const saved = rngOverride;
+    rngOverride = mulberry(hashStr('hexa-params-' + date));
+    let params;
+    try { params = v.make(); } finally { rngOverride = saved; }
+    const nColors = params.colors || 5;
+    const r = {
+      ...MODES.daily, radius: 3, prefill: 0.55, tools: 1, rocks: 0, hardRocks: 0, ...params,
+      moves: params.time ? 0 : params.moves, colors: () => nColors, variant: v.key, variantName: v.name, variantIcon: v.icon,
+    };
+    const parts = [r.time ? `${r.time} s au chrono (+3 s par collecte)` : `${r.moves} piles`];
+    parts.push(r.radius === 4 ? 'grand plateau' : r.radius === 2 ? 'mini plateau' : 'plateau normal');
+    parts.push(`${nColors} couleurs`);
+    if (r.rocks) parts.push(`${r.rocks} rochers`);
+    if (!r.tools) parts.push('sans outils');
+    r.desc = `${v.icon} Aujourd’hui : ${v.name}. ${parts.join(' · ')}. Le même défi pour tout le monde.`;
+    dailyCache.set(date, r);
+    return r;
+  }
+  const isFreeCell = c => !c.stack.length && !c.rock && !c.hole;
 
   // Date du défi à l'heure de Paris (et non celle du téléphone) : tout le monde a le même défi
   // au même moment, quel que soit son fuseau. Format AAAA-MM-JJ.
@@ -1038,7 +1120,7 @@
     o.best = Math.max(0, Math.floor(Number(p.best)) || 0);
     o.bestCombo = Math.max(0, Math.floor(Number(p.bestCombo)) || 0);
     o.plays = Math.max(0, Math.floor(Number(p.plays)) || 0);
-    o.game = validGame(p.game, 3) ? p.game : null;
+    o.game = [3, 2, 4].some(r => validGame(p.game, r)) ? p.game : null;
     o.date = typeof p.date === 'string' ? p.date : '';
     return o;
   }
@@ -1087,6 +1169,7 @@
     return out;
   }
   const save = loadSave();
+  save.puzzle = cleanPuzzle((readJSON(SAVE_KEY) || {}).puzzle); // v1.4 : puzzles résolus et étoiles
   state.diff = save.current;
   gridRadius = diff().radius;
   const prog = () => save.progress[state.diff];
@@ -1110,7 +1193,8 @@
 
   /** Photographie la partie en cours (appelé uniquement entre deux coups, plateau stable). */
   function saveGame() {
-    if (state.mode === 'chrono') return; // une partie chronométrée ne se met pas en pause d'une session à l'autre
+    // Partie chronométrée : pas de pause d'une session à l'autre. Puzzle : on recommence le niveau.
+    if (isTimed() || state.mode === 'puzzle') return;
     slot().game = {
       level: state.level,
       score: state.score,
@@ -1135,6 +1219,7 @@
   }
 
   function clearGame() {
+    if (state.mode === 'puzzle') return;
     slot().game = null;
     persist();
   }
@@ -1263,6 +1348,15 @@
   }
 
   function refillDock() {
+    if (state.mode === 'puzzle') {
+      const count = Math.min(3, state.movesLeft);
+      for (let i = 0; i < 3; i++) {
+        const st = i < count ? state.puzzleQueue.shift() : null;
+        state.dock[i] = st ? { stack: st.slice(), born: now + i * 110 } : null;
+      }
+      if (count) Sfx.deal();
+      return;
+    }
     const nColors = colorsFor(state.level);
     const boardTops = [...new Set(state.cells.filter(c => c.stack.length).map(c => topColor(c.stack)))];
     const t = now;
@@ -1325,14 +1419,30 @@
     rays.length = 0;
     banners.length = 0;
     document.body.classList.remove('fever');
-    for (const c of state.cells) { c.stack = []; c.incoming = 0; c.rock = false; c.rockHp = 0; c.rockAt = -1e9; c.crackAt = -1e9; }
-    prefill();
+    for (const c of state.cells) { c.stack = []; c.incoming = 0; c.rock = false; c.rockHp = 0; c.rockAt = -1e9; c.crackAt = -1e9; c.hole = false; }
+    state.collected = 0;                     // jetons collectés dans la partie (objectifs du puzzle)
+    state.collectedBy = PALETTE.map(() => 0);
+    if (state.mode === 'puzzle') setupPuzzle();
+    else {
+      prefill();
+      if (state.mode === 'daily' && rules().rocks) placeDailyRocks(rules().rocks, rules().hardRocks);
+    }
     refillDock();
     hideModal();
     setHammerMode(false);
     updateTools();
     hudCache = '';
     if (persistIt) saveGame();
+  }
+
+  /** Défi du jour « Carrière » : rochers posés au départ (au hasard du jour, donc les mêmes pour tous). */
+  function placeDailyRocks(n, hard) {
+    const free = state.cells.filter(c => isFreeCell(c) && !(c.q === 0 && c.r === 0));
+    for (let i = 0; i < n && free.length; i++) {
+      const cell = free.splice(randInt(0, free.length - 1), 1)[0];
+      cell.rock = true;
+      cell.rockHp = i < hard ? 2 : 1;
+    }
   }
 
   /** Reprend une partie sauvegardée : même plateau, même dock, mêmes outils. */
@@ -1638,6 +1748,8 @@
   async function collect(cell, gen) {
     const color = topColor(cell.stack);
     const k = topRun(cell.stack);
+    state.collected += k;
+    state.collectedBy[color] += k;
     comboStep(cell);
     const mult = comboMult() * (state.feverOn ? 2 : 1);
     const per = POINTS_PER_TOKEN * mult;
@@ -1664,7 +1776,7 @@
     // Survie : une collecte brise les rochers voisins
     for (const n of cell.nb) if (n.rock) breakRock(n, true);
     // Chrono : chaque collecte rajoute du temps
-    if (state.mode === 'chrono' && !state.over) {
+    if (isTimed() && !state.over) {
       state.timeLeft += CHRONO_BONUS;
       floatText(cell.cx + L.hex * 1.2, topY - L.hex * 0.2, '+' + CHRONO_BONUS / 1000 + ' s', '#67e8f9', L.hex * 0.55);
     }
@@ -1845,6 +1957,7 @@
     if (state.dock.every(d => !d)) refillDock();
     state.busy = false;
     updateTools();
+    if (state.mode === 'puzzle') { puzzleAfterTurn(); return; }
     if (!isSpecial()) {
       if (state.score >= state.goal) { levelComplete(); return; }
       if (!state.cells.some(isFreeCell)) { gameOver(); return; }
@@ -1853,7 +1966,7 @@
     }
     // Modes spéciaux
     if (rules().moves && state.movesLeft <= 0) { endSpecial('moves'); return; }
-    if (state.mode === 'chrono' && state.timeLeft <= 0) { endSpecial('time'); return; }
+    if (isTimed() && state.timeLeft <= 0) { endSpecial('time'); return; }
     if (state.mode === 'survival' && state.turn > 0 && state.turn !== state.lastShrinkTurn) {
       state.lastShrinkTurn = state.turn;
       const t = state.turn;
@@ -1879,7 +1992,8 @@
   function checkStuck() {
     if (state.busy || state.modalOpen || state.homeOpen || state.hammerMode) return;
     if (state.cells.some(isFreeCell)) return;
-    if (isSpecial()) specialFull(); else gameOver();
+    if (state.mode === 'puzzle') puzzleFail('full');
+    else if (isSpecial()) specialFull(); else gameOver();
   }
 
   /* ---------------- Survie : rochers ---------------- */
@@ -1928,6 +2042,382 @@
     }
   }
 
+  /* =====================================================================
+   * Mode Histoire / Puzzle (v1.4)
+   * Chaque puzzle est généré à partir de son numéro (le même pour tout le monde) : cases inutilisables,
+   * piles déjà posées, rochers et une suite de piles IMPOSÉES (aucun hasard pendant la partie).
+   * L'objectif est calculé en faisant jouer le niveau par un joueur automatique qui utilise le même
+   * moteur de fusion (simulé, sans animation) : chaque puzzle a donc au moins une solution.
+   * ===================================================================== */
+  const PUZZLE_CHAPTERS = [
+    { from: 1, to: 8, name: 'Premiers pas', icon: '🌱', radius: 2, holes: 0, rocks: 0, stacks: [3, 5], colors: 3, piles: [8, 10], goal: 'total', ratio: 0.7,
+      story: 'Bienvenue dans l’atelier ! Ici, pas de hasard : les piles arrivent toujours dans le même ordre. À toi de trouver où les poser pour atteindre l’objectif.' },
+    { from: 9, to: 16, name: 'Le plateau troué', icon: '🕳️', radius: 3, holes: [4, 7], rocks: 0, stacks: [5, 8], colors: 4, piles: [10, 12], goal: 'total', ratio: 0.75,
+      story: 'Le plateau a pris l’eau : certaines cases ont disparu. Impossible d’y poser quoi que ce soit, et elles ne relient plus leurs voisines.' },
+    { from: 17, to: 24, name: 'La carrière', icon: '🪨', radius: 3, holes: [2, 4], rocks: [3, 5], hard: [0, 2], stacks: [5, 8], colors: 4, piles: [12, 14], goal: 'total', ratio: 0.75,
+      story: 'Des rochers bloquent des cases. Une collecte juste à côté les brise (deux pour les rochers renforcés) et libère la place.' },
+    { from: 25, to: 32, name: 'Couleur imposée', icon: '🎨', radius: 3, holes: [3, 5], rocks: [0, 2], stacks: [6, 9], colors: 5, piles: [12, 14], goal: 'color', ratio: 0.8,
+      story: 'Le client est exigeant : il ne veut qu’une seule couleur. Seuls les jetons de cette couleur comptent pour l’objectif.' },
+    { from: 33, to: 40, name: 'Maître du tri', icon: '👑', radius: 3, holes: [4, 7], rocks: [2, 4], hard: [1, 2], stacks: [7, 10], colors: 5, piles: [14, 16], goal: 'mix', ratio: 0.85,
+      story: 'Trous, rochers, couleur imposée : tout ce que tu as appris, réuni. Montre que tu es le maître du tri !' },
+    { from: 41, to: Infinity, name: 'Défis sans fin', icon: '♾️', radius: [3, 4], holes: [3, 8], rocks: [0, 5], hard: [0, 2], stacks: [6, 12], colors: [4, 6], piles: [12, 18], goal: 'mix', ratio: 0.9,
+      story: 'Tu as fini l’histoire, bravo ! Place aux défis sans fin : chaque puzzle est plus retors que le précédent.' },
+  ];
+  const PUZZLE_SHOWN = 60; // puzzles affichés au minimum dans la grille
+  const COLOR_DOTS = ['🟦', '🟩', '🟧', '🟪', '🟨', '🟥'];
+  const chapterOf = n => PUZZLE_CHAPTERS.find(c => n >= c.from && n <= c.to);
+  const rr = v => (Array.isArray(v) ? randInt(v[0], v[1]) : v);
+
+  /** Plateau de simulation : mêmes cases, même ordre et mêmes voisins que buildBoard. */
+  function simBoard(R) {
+    const cells = [];
+    const map = new Map();
+    for (let q = -R; q <= R; q++) {
+      for (let r = Math.max(-R, -q - R); r <= Math.min(R, -q + R); r++) {
+        const c = { q, r, stack: [], rock: false, rockHp: 0, hole: false, nb: [], nbi: [] };
+        cells.push(c);
+        map.set(cellKey(q, r), c);
+      }
+    }
+    for (const c of cells) {
+      c.nb = DIRS.map(([dq, dr]) => map.get(cellKey(c.q + dq, c.r + dr))).filter(Boolean);
+      c.nbi = c.nb.map(n => cells.indexOf(n));
+    }
+    return cells;
+  }
+  function simClone(cells) {
+    const copy = cells.map(c => ({ q: c.q, r: c.r, stack: c.stack.slice(), rock: c.rock, rockHp: c.rockHp, hole: c.hole, nb: null, nbi: c.nbi }));
+    for (const c of copy) c.nb = c.nbi.map(j => copy[j]);
+    return copy;
+  }
+  const simFree = c => !c.stack.length && !c.rock && !c.hole;
+
+  /**
+   * Résolution sans animation : copie conforme de resolveFrom (même file, même groupe, même pile centrale,
+   * même ordre des sauts, même balayage final). Compte les jetons collectés dans `out`.
+   */
+  function simResolve(cells, start, out) {
+    const queue = [];
+    const queued = new Set();
+    const push = c => { if (c && !queued.has(c)) { queued.add(c); queue.push(c); } };
+    push(start);
+    const unsettled = () => cells.filter(c => c.stack.length && (
+      topRun(c.stack) >= COLLECT_THRESHOLD ||
+      c.nb.some(n => n.stack.length && topColor(n.stack) === topColor(c.stack))));
+    let guard = 0;
+    while (guard < 20000) {
+      if (!queue.length) {
+        const missed = unsettled();
+        if (!missed.length) break;
+        missed.forEach(push);
+      }
+      guard++;
+      const cell = queue.shift();
+      queued.delete(cell);
+      if (!cell.stack.length) continue;
+      const color = topColor(cell.stack);
+      const group = sameColorGroup(cell, color);
+      let target = cell;
+      if (group.length > 1) {
+        target = pickHub(group, cell);
+        const parent = new Map([[target, null]]);
+        const order = [target];
+        for (let i = 0; i < order.length; i++) {
+          for (const n of order[i].nb) {
+            if (!parent.has(n) && group.includes(n)) { parent.set(n, order[i]); order.push(n); }
+          }
+        }
+        for (let i = order.length - 1; i > 0; i--) {
+          const src = order[i];
+          const dst = parent.get(src);
+          if (!src.stack.length || topColor(src.stack) !== color) continue;
+          for (let k = topRun(src.stack); k > 0; k--) dst.stack.push(src.stack.pop());
+          push(src);
+          src.nb.forEach(push);
+        }
+        push(target);
+      }
+      if (target.stack.length && topRun(target.stack) >= COLLECT_THRESHOLD) {
+        const k = topRun(target.stack);
+        const col = topColor(target.stack);
+        target.stack.length -= k;
+        out.total += k;
+        out.byColor[col] += k;
+        for (const n of target.nb) {
+          if (!n.rock) continue;
+          if (n.rockHp > 1) n.rockHp--; else { n.rock = false; n.rockHp = 0; }
+        }
+        push(target);
+        target.nb.forEach(push);
+      }
+    }
+  }
+
+  /**
+   * Joueur automatique : à chaque tour, essaie chaque pile du dock sur chaque case libre et garde le coup
+   * qui collecte le plus (puis qui garde le plateau le plus jouable). Le dock se recharge par 3, dans l'ordre,
+   * comme dans le jeu. Renvoie le total collecté et l'historique pile après pile.
+   */
+  function greedyPlay(cells, queue) {
+    let board = cells;
+    const q = queue.map(st => st.slice());
+    const out = { total: 0, byColor: PALETTE.map(() => 0) };
+    const hist = [];
+    let dock = [];
+    const refill = () => { dock = []; for (let i = 0; i < 3 && q.length; i++) dock.push(q.shift()); };
+    refill();
+    while (dock.some(Boolean)) {
+      let best = null;
+      dock.forEach((st, di) => {
+        if (!st) return;
+        board.forEach((c, ci) => {
+          if (!simFree(c)) return;
+          const b = simClone(board);
+          const o = { total: 0, byColor: PALETTE.map(() => 0) };
+          b[ci].stack = st.slice();
+          simResolve(b, b[ci], o);
+          let v = o.total * 100;
+          for (const x of b) {
+            if (simFree(x)) v += 4;
+            else if (x.stack.length) v += Math.pow(topRun(x.stack), 1.5);
+          }
+          if (!best || v > best.v) best = { v, di, b, o };
+        });
+      });
+      if (!best) break; // plus de case libre
+      board = best.b;
+      out.total += best.o.total;
+      best.o.byColor.forEach((n, i) => { out.byColor[i] += n; });
+      hist.push({ total: out.total, byColor: out.byColor.slice() });
+      dock[best.di] = null;
+      if (dock.every(d => !d)) refill();
+    }
+    return { out, hist };
+  }
+
+  /** Un essai de génération ; null si le joueur automatique ne collecte pas assez pour un objectif intéressant. */
+  function buildPuzzle(n, ch, lenient) {
+    const radius = rr(ch.radius);
+    const nColors = rr(ch.colors);
+    const cells = simBoard(radius);
+    const center = cells.find(c => c.q === 0 && c.r === 0);
+    const takeFrom = list => list.splice(randInt(0, list.length - 1), 1)[0];
+    // Cases inutilisables (jamais le centre, au plus un cinquième du plateau)
+    const holeCand = cells.filter(c => c !== center);
+    const nHoles = Math.min(rr(ch.holes), Math.floor(cells.length / 5));
+    for (let i = 0; i < nHoles; i++) takeFrom(holeCand).hole = true;
+    // Piles déjà posées, sans deux sommets voisins identiques
+    const freeCand = () => cells.filter(c => simFree(c) && c !== center);
+    const nStacks = rr(ch.stacks);
+    for (let i = 0; i < nStacks; i++) {
+      const cand = freeCand();
+      if (!cand.length) break;
+      const c = takeFrom(cand);
+      const avoid = c.nb.filter(x => x.stack.length).map(x => topColor(x.stack));
+      const allowed = [];
+      for (let k = 0; k < nColors; k++) if (!avoid.includes(k)) allowed.push(k);
+      if (allowed.length) c.stack = genStack(2, 5, nColors, rpick(allowed));
+    }
+    // Rochers (les premiers sont renforcés)
+    const nRocks = rr(ch.rocks || 0);
+    const nHard = rr(ch.hard || 0);
+    for (let i = 0; i < nRocks; i++) {
+      const cand = freeCand();
+      if (!cand.length) break;
+      const c = takeFrom(cand);
+      c.rock = true;
+      c.rockHp = i < nHard ? 2 : 1;
+    }
+    // Suite de piles imposées
+    const queue = [];
+    const nPiles = rr(ch.piles);
+    for (let i = 0; i < nPiles; i++) queue.push(genDockStack(nColors));
+    // Le joueur automatique joue le niveau : l'objectif est une part de ce qu'il a réussi
+    const { out, hist } = greedyPlay(simClone(cells), queue);
+    const type = ch.goal === 'mix' ? (rand() < 0.5 ? 'total' : 'color') : ch.goal;
+    let color = 0;
+    let reached = out.total;
+    if (type === 'color') {
+      color = out.byColor.indexOf(Math.max(...out.byColor));
+      reached = out.byColor[color];
+    }
+    const target = Math.floor(reached * (lenient ? 0.6 : ch.ratio));
+    if (target < (lenient ? 1 : 10)) return null;
+    const value = h => (type === 'color' ? h.byColor[color] : h.total);
+    const par = hist.findIndex(h => value(h) >= target) + 1; // piles utilisées par le joueur automatique
+    return {
+      level: n, chapter: ch, radius, nColors,
+      holes: cells.flatMap((c, i) => (c.hole ? [i] : [])),
+      stacks: cells.flatMap((c, i) => (c.stack.length ? [[i, c.stack.slice()]] : [])),
+      rocks: cells.flatMap((c, i) => (c.rock ? [[i, c.rockHp]] : [])),
+      queue, goal: { type, color, target }, par,
+    };
+  }
+
+  const puzzleCache = new Map();
+  function getPuzzle(n) {
+    if (puzzleCache.has(n)) return puzzleCache.get(n);
+    const ch = chapterOf(n);
+    const saved = rngOverride;
+    let def = null;
+    for (let attempt = 0; attempt < 40 && !def; attempt++) {
+      rngOverride = mulberry(hashStr(`hexa-puzzle-${n}-${attempt}`));
+      try { def = buildPuzzle(n, ch, attempt >= 20); } finally { rngOverride = saved; }
+    }
+    puzzleCache.set(n, def);
+    return def;
+  }
+
+  function puzzleRules() {
+    const d = state.puzzleDef;
+    return { radius: d.radius, prefill: 0, tools: 0, moves: d.queue.length, colors: () => d.nColors, short: 'Puzzle' };
+  }
+  const goalLabel = g => (g.type === 'color' ? `${COLOR_DOTS[g.color]} ${PALETTE[g.color].name}` : '🎯 Jetons');
+  const goalSentence = g => (g.type === 'color'
+    ? `Collecte <b>${g.target}</b> jetons <b>${PALETTE[g.color].name.toLowerCase()}s</b> ${COLOR_DOTS[g.color]}`
+    : `Collecte <b>${g.target}</b> jetons, toutes couleurs`);
+  const puzzleProgress = () => {
+    const g = state.puzzleDef.goal;
+    return g.type === 'color' ? state.collectedBy[g.color] : state.collected;
+  };
+
+  function setupPuzzle() {
+    const d = state.puzzleDef;
+    d.holes.forEach(i => { state.cells[i].hole = true; });
+    d.stacks.forEach(([i, st]) => { state.cells[i].stack = st.slice(); });
+    d.rocks.forEach(([i, hp]) => { state.cells[i].rock = true; state.cells[i].rockHp = hp; });
+    state.puzzleQueue = d.queue.map(st => st.slice());
+  }
+
+  function startPuzzle(n) {
+    state.puzzleDef = getPuzzle(n);
+    state.mode = 'puzzle';
+    gridRadius = state.puzzleDef.radius;
+    buildBoard();
+    layout();
+    startLevel(n, false);
+    hideHome();
+    const d = state.puzzleDef;
+    const ch = d.chapter;
+    const announce = () => after(300, () => banner(`${goalLabel(d.goal)} : ${d.goal.target}`, '#ffe066', 0.85));
+    // Premier puzzle d'un chapitre : l'histoire, une seule fois
+    if (n === ch.from && !save.puzzle.seen.includes(ch.from)) {
+      save.puzzle.seen.push(ch.from);
+      persist();
+      showModal({
+        icon: ch.icon,
+        title: `Chapitre ${PUZZLE_CHAPTERS.indexOf(ch) + 1} · ${ch.name}`,
+        text: `${ch.story}<br><br>Puzzle ${n} : ${goalSentence(d.goal)} avec ${d.queue.length} piles.`,
+        buttons: [{ label: 'C’est parti !', primary: true, onClick: () => { hideModal(); announce(); } }],
+      });
+    } else {
+      announce();
+    }
+  }
+
+  function puzzleAfterTurn() {
+    if (puzzleProgress() >= state.puzzleDef.goal.target) { puzzleComplete(); return; }
+    if (state.movesLeft <= 0) { puzzleFail('moves'); return; }
+    if (!state.cells.some(isFreeCell)) puzzleFail('full');
+  }
+
+  function puzzleComplete() {
+    state.over = true;
+    state.busy = true;
+    const d = state.puzzleDef;
+    const used = d.queue.length - state.movesLeft;
+    // ★★★ : aussi bien (ou mieux) que le joueur automatique ; ★★ : jusqu'à 2 piles de plus
+    const stars = used <= d.par ? 3 : used <= d.par + 2 ? 2 : 1;
+    const pz = save.puzzle;
+    pz.stars[d.level] = Math.max(pz.stars[d.level] || 0, stars);
+    pz.unlocked = Math.max(pz.unlocked, d.level + 1);
+    persist();
+    scheduleCloudSave();
+    Sfx.win();
+    confetti();
+    after(500, () => showModal({
+      icon: '🧩',
+      title: 'Puzzle réussi !',
+      text: `<span style="font-size:26px;color:#ffd84d;letter-spacing:4px">${'★'.repeat(stars)}${'☆'.repeat(3 - stars)}</span><br>` +
+        `Objectif atteint en <b>${used}</b> pile${used > 1 ? 's' : ''} sur ${d.queue.length}.` +
+        (stars < 3 ? `<br><small>★★★ en ${d.par} pile${d.par > 1 ? 's' : ''} ou moins.</small>` : ''),
+      buttons: [
+        { label: 'Puzzle suivant ▶', primary: true, onClick: () => startPuzzle(d.level + 1) },
+        { label: '↻ Rejouer', onClick: () => startPuzzle(d.level) },
+        { label: 'Menu des puzzles', onClick: () => { hideModal(); showHome(); } },
+      ],
+    }));
+  }
+
+  function puzzleFail(reason) {
+    state.over = true;
+    state.busy = true;
+    Sfx.lose();
+    const d = state.puzzleDef;
+    after(400, () => showModal({
+      icon: '🧩',
+      title: 'Pas cette fois…',
+      text: `${reason === 'full' ? 'Plus aucune case libre.' : 'Plus de piles à poser.'}<br>` +
+        `${goalLabel(d.goal)} : <b>${Math.min(puzzleProgress(), d.goal.target)}</b> / ${d.goal.target}<br>` +
+        '<small>Les piles arrivent toujours dans le même ordre : observe-les et retente !</small>',
+      buttons: [
+        { label: '↻ Réessayer', primary: true, onClick: () => startPuzzle(d.level) },
+        { label: 'Menu des puzzles', onClick: () => { hideModal(); showHome(); } },
+      ],
+    }));
+  }
+
+  function cleanPuzzle(p) {
+    const o = { unlocked: 1, stars: {}, seen: [] };
+    if (!p || typeof p !== 'object') return o;
+    o.unlocked = Math.max(1, Math.min(100000, Math.floor(Number(p.unlocked)) || 1));
+    if (p.stars && typeof p.stars === 'object') {
+      for (const [k, v] of Object.entries(p.stars)) {
+        const n = Math.floor(Number(v));
+        if (/^[0-9]{1,5}$/.test(k) && n >= 1 && n <= 3) o.stars[k] = n;
+      }
+    }
+    if (Array.isArray(p.seen)) o.seen = p.seen.filter(Number.isInteger).slice(0, 100);
+    return o;
+  }
+
+  function renderPuzzleGrid() {
+    const pz = save.puzzle;
+    const grid = $('puzzleGrid');
+    grid.innerHTML = '';
+    const count = Math.max(PUZZLE_SHOWN, pz.unlocked + 10);
+    const frag = document.createDocumentFragment();
+    for (let n = 1; n <= count; n++) {
+      const ch = chapterOf(n);
+      if (n === ch.from) {
+        const t = document.createElement('div');
+        t.className = 'worldTitle';
+        t.textContent = `${ch.icon} Chapitre ${PUZZLE_CHAPTERS.indexOf(ch) + 1} · ${ch.name}`;
+        frag.appendChild(t);
+      }
+      const unlocked = n <= pz.unlocked;
+      const b = document.createElement('button');
+      b.className = 'lvlTile' + (unlocked ? '' : ' locked') + (n === pz.unlocked ? ' current' : '');
+      b.disabled = !unlocked;
+      b.dataset.puzzle = n;
+      b.setAttribute('aria-label', unlocked ? `Puzzle ${n}` : `Puzzle ${n} verrouillé`);
+      const st = pz.stars[n] || 0;
+      b.innerHTML = unlocked
+        ? `<b>${n}</b><span class="stars">${'★'.repeat(st)}${'☆'.repeat(3 - st)}</span>`
+        : `<b>🔒</b><span class="stars">${n}</span>`;
+      frag.appendChild(b);
+    }
+    grid.appendChild(frag);
+    const solved = Object.keys(pz.stars).length;
+    const stars = Object.values(pz.stars).reduce((a, b) => a + b, 0);
+    $('puzzleInfo').textContent = solved
+      ? `${solved} puzzle${solved > 1 ? 's' : ''} résolu${solved > 1 ? 's' : ''} · ${stars} ★ · ★★★ = aussi bien que le robot`
+      : 'Pas de hasard : les piles arrivent toujours dans le même ordre. Chaque puzzle a une solution.';
+    const live = state.mode === 'puzzle' && !state.over;
+    $('puzzleResume').hidden = !live;
+    if (live) $('puzzleResume').textContent = `Continuer · Puzzle ${state.level}`;
+  }
+
   /* ---------------- Fin d'une partie en mode spécial ---------------- */
   function specialFull() {
     if (state.hammers <= 0) { endSpecial('full'); return; }
@@ -1950,7 +2440,7 @@
     state.busy = true;
     setHammerMode(false);
     if (state.mode === 'daily') ensureDaily();
-    const m = MODES[state.mode];
+    const m = state.mode === 'daily' ? { ...MODES.daily, ...rules() } : MODES[state.mode];
     const rec = save.special[state.mode];
     const isRecord = state.score > 0 && state.score > rec.best;
     rec.best = Math.max(rec.best, state.score);
@@ -2047,7 +2537,7 @@
     $('btnHammer').disabled = state.hammers <= 0;
     $('btnReroll').disabled = state.rerolls <= 0;
     // Partie sans outils (préférence) : on masque les boutons plutôt que de les laisser grisés
-    const hideTools = state.hammers <= 0 && state.rerolls <= 0 && save.noTools;
+    const hideTools = state.hammers <= 0 && state.rerolls <= 0 && (save.noTools || state.mode === 'puzzle');
     if (document.body.classList.contains('noTools') !== hideTools) {
       document.body.classList.toggle('noTools', hideTools);
       layout(); // la place libérée (ou reprise) par la barre d'outils change la taille du plateau
@@ -2207,7 +2697,7 @@
       return;
     }
     if (state.busy || drag || state.over) return;
-    if (state.mode === 'chrono' && state.timeLeft <= 0) return;
+    if (isTimed() && state.timeLeft <= 0) return;
 
     const slot = pickDock(p);
     if (slot < 0) { startPeek(e, p); return; }
@@ -2857,7 +3347,7 @@
   const toCount = v => Math.max(0, Math.floor(Number(v)) || 0);
 
   function progressSnapshot() {
-    const out = { v: 1, progress: {}, special: {} };
+    const out = { v: 1, progress: {}, special: {}, puzzle: { unlocked: save.puzzle.unlocked, stars: save.puzzle.stars } };
     for (const k of DIFF_ORDER) out.progress[k] = { unlocked: save.progress[k].unlocked, best: save.progress[k].best };
     for (const k of MODE_ORDER) {
       const sp = save.special[k];
@@ -2903,6 +3393,18 @@
       }
       if (best > l.best) { l.best = best; changed = true; }
       if (bestCombo > l.bestCombo) { l.bestCombo = bestCombo; changed = true; }
+    }
+    // Puzzles : dernier débloqué et meilleures étoiles
+    const rp = remote.puzzle;
+    if (rp && typeof rp === 'object') {
+      const unlocked = Math.min(toCount(rp.unlocked), 100000);
+      if (unlocked > save.puzzle.unlocked) { save.puzzle.unlocked = unlocked; changed = true; }
+      if (rp.stars && typeof rp.stars === 'object') {
+        for (const [k, v] of Object.entries(rp.stars)) {
+          const n = Math.min(3, toCount(v));
+          if (/^[0-9]{1,5}$/.test(k) && n > (save.puzzle.stars[k] || 0)) { save.puzzle.stars[k] = n; changed = true; }
+        }
+      }
     }
     return changed;
   }
@@ -3219,9 +3721,10 @@
   let homeTab = 'levels';
 
   function applyTab() {
-    const panels = { levels: 'panelLevels', modes: 'panelModes', ranks: 'panelRanks', prefs: 'panelPrefs', faq: 'panelFaq' };
+    const panels = { levels: 'panelLevels', modes: 'panelModes', ranks: 'panelRanks', prefs: 'panelPrefs', faq: 'panelFaq', puzzle: 'panelPuzzle' };
     $('tabLevels').classList.toggle('active', homeTab === 'levels');
-    $('tabModes').classList.toggle('active', homeTab === 'modes');
+    $('tabModes').classList.toggle('active', homeTab === 'modes' || homeTab === 'puzzle');
+    if (homeTab === 'puzzle') renderPuzzleGrid();
     $('tabRanks').classList.toggle('active', homeTab === 'ranks');
     for (const [tab, id] of Object.entries(panels)) $(id).classList.toggle('show', homeTab === tab);
     $('homeTabs').style.display = homeTab === 'prefs' || homeTab === 'faq' ? 'none' : '';
@@ -3254,8 +3757,17 @@
     ensureDaily();
     const list = $('modeList');
     list.innerHTML = '';
+    const pzStars = Object.values(save.puzzle.stars).reduce((a, b) => a + b, 0);
+    const pz = document.createElement('button');
+    pz.className = 'modeCard';
+    pz.dataset.mode = 'puzzle';
+    pz.innerHTML = '<span class="mi">🧩</span>' +
+      `<span class="mn"><span>Histoire · Puzzles${state.mode === 'puzzle' && !state.over ? '<span class="live">en cours</span>' : ''}</span>` +
+      `<span class="mr">${pzStars ? pzStars + ' ★' : 'Nouveau !'}</span></span>` +
+      '<span class="md">Des niveaux à résoudre : cases interdites, rochers, piles imposées et objectifs de couleur. Pas de hasard, chaque puzzle a une solution.</span>';
+    list.appendChild(pz);
     for (const k of MODE_ORDER) {
-      const m = MODES[k];
+      const m = k === 'daily' ? { ...MODES.daily, desc: dailyRules(todayKey()).desc } : MODES[k];
       const r = save.special[k];
       const live = r.game || (state.mode === k && !state.over);
       const rec = r.best ? `${k === 'daily' ? 'Aujourd’hui' : 'Record'} ${r.best}` : 'À découvrir';
@@ -3281,18 +3793,34 @@
     // Partie déjà ouverte dans ce mode (notamment le Chrono, jamais sauvegardé) : on la reprend telle quelle
     if (state.mode === k && !state.over) { hideHome(); return; }
     if (k === 'daily') ensureDaily();
+    if (k === 'daily') state.dailyDate = todayKey(); // règles du jour avant de construire le plateau
     setMode(k);
-    const g = save.special[k].game;
+    let g = save.special[k].game;
+    // Défi commencé avant la v1.4 (ou sur un plateau d'une autre taille) : on repart à neuf
+    if (g && g.cells.length !== state.cells.length) g = save.special[k].game = null;
     if (g) restoreGame(g); else startLevel(1);
     hideHome();
+    if (k === 'daily') {
+      const d = rules();
+      after(450, () => banner(`${d.variantIcon} ${d.variantName}`, '#ffe066', 0.9));
+    }
   }
 
   $('modeList').addEventListener('click', e => {
     const b = e.target.closest('.modeCard');
     if (!b) return;
     Sfx.init(); Sfx.click();
+    if (b.dataset.mode === 'puzzle') { homeTab = 'puzzle'; applyTab(); return; }
     startMode(b.dataset.mode);
   });
+  $('puzzleGrid').addEventListener('click', e => {
+    const b = e.target.closest('.lvlTile');
+    if (!b || b.disabled) return;
+    Sfx.init(); Sfx.click();
+    startPuzzle(Number(b.dataset.puzzle));
+  });
+  $('puzzleResume').addEventListener('click', () => { Sfx.init(); Sfx.click(); hideHome(); });
+  $('puzzleBack').addEventListener('click', () => { Sfx.init(); Sfx.click(); homeTab = 'modes'; applyTab(); });
 
   $('homeFx').addEventListener('click', () => {
     Sfx.init(); Sfx.click();
@@ -3333,7 +3861,7 @@
 
   function showHome() {
     setHammerMode(false);
-    if (isSpecial()) homeTab = 'modes';
+    if (isSpecial()) homeTab = state.mode === 'puzzle' ? 'puzzle' : 'modes';
     renderHome();
     applyTab();
     $('home').classList.add('show');
@@ -3512,8 +4040,14 @@
     const gr = L.hex * (2 * gridRadius + 1);
     c.fillRect(L.boardCX - gr, L.boardCY - gr, gr * 2, gr * 2);
 
-    // Socles des cases (triés par Y)
+    // Socles des cases (triés par Y) ; une case inutilisable (puzzle) n'a pas de socle
     for (const cell of state.drawOrder) {
+      if (cell.hole) {
+        hexPath(c, L.plateR * 0.86, cell.cx, cell.cy + L.plateH * 0.5);
+        c.fillStyle = 'rgba(5, 3, 18, 0.55)';
+        c.fill();
+        continue;
+      }
       drawToken(c, cell.cx, cell.cy + L.plateH, L.plateR, L.plateH, PLATE);
       hexPath(c, L.plateR * 0.62, cell.cx, cell.cy);
       c.strokeStyle = 'rgba(255, 255, 255, 0.06)';
@@ -4068,6 +4602,14 @@
       num = state.level;
       txt = `${shown} / ${state.goal}`;
       pct = shown / state.goal;
+    } else if (state.mode === 'puzzle') {
+      const d = state.puzzleDef;
+      const have = Math.min(puzzleProgress(), d.goal.target);
+      label = `Puzzle ${state.level}`;
+      num = state.movesLeft;
+      txt = `${goalLabel(d.goal)} ${have} / ${d.goal.target} · ${state.movesLeft} pile${state.movesLeft > 1 ? 's' : ''}`;
+      pct = have / d.goal.target;
+      danger = state.movesLeft <= 2 && have < d.goal.target && !state.over;
     } else {
       const m = rules();
       label = m.short;
@@ -4079,7 +4621,7 @@
         num = state.movesLeft;
         pct = state.movesLeft / m.moves;
         danger = state.movesLeft <= 3 && !state.over;
-      } else if (state.mode === 'chrono') {
+      } else if (isTimed()) {
         num = Math.ceil(state.timeLeft / 1000);
         pct = state.timeLeft / (m.time * 1000);
         danger = state.timeLeft <= 10000 && !state.over;
@@ -4103,7 +4645,7 @@
 
   /** Chrono : le temps file hors accueil et hors fenêtres ; à zéro, la partie se termine après la cascade en cours. */
   function updateChrono(realDt) {
-    if (state.mode !== 'chrono' || state.over || state.homeOpen || state.modalOpen || state.timeLeft <= 0) return;
+    if (!isTimed() || state.over || state.homeOpen || state.modalOpen || state.timeLeft <= 0) return;
     const before = state.timeLeft;
     state.timeLeft = Math.max(0, state.timeLeft - realDt * timeScale);
     if (state.timeLeft <= 10000 && Math.ceil(before / 1000) !== Math.ceil(state.timeLeft / 1000)) {
@@ -4121,13 +4663,14 @@
    * Boucle principale
    * ===================================================================== */
   let lastT = performance.now();
+  let testSpeed = 1; // accéléré seulement par les tests automatiques (mode démo)
   function loop(t) {
     const realDt = Math.min(50, Math.max(0, t - lastT));
     lastT = t;
     // Ralenti : le temps du jeu glisse vers SLOWMO_SCALE puis revient à 1
     const targetScale = performance.now() < state.slowUntil ? SLOWMO_SCALE : 1;
     timeScale += (targetScale - timeScale) * Math.min(1, realDt / 60);
-    now += realDt * timeScale;
+    now += realDt * timeScale * testSpeed;
     const dt = (realDt / 1000) * timeScale;
 
     gaugeRect = $('progBar').getBoundingClientRect();
@@ -4163,7 +4706,10 @@
   // Pseudo à jour (changé ailleurs ?) et invitation à créer un code PIN s'il n'en a pas
   setTimeout(syncProfile, 900);
   window.addEventListener('online', () => { flushPending(); syncProfile(); });  // syncProfile relance aussi la progression
-  if (MOCK) window.__hexa = { state, save, L, mergePreview, scheduleCloudSave }; // accès de test, seulement en mode démo
+  if (MOCK) { // accès de test, seulement en mode démo
+    window.__hexa = { state, save, L, mergePreview, scheduleCloudSave, getPuzzle, startPuzzle, simBoard, simClone, simResolve, dailyRules, resolveFrom,
+      setSpeed: v => { testSpeed = v; } };
+  }
 })();
 </script>
 <script>

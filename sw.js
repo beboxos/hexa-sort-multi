@@ -3,7 +3,7 @@
 // (et non « hexa-sort- ») pour que les deux versions ne s'effacent jamais leurs caches.
 // La page passe d'abord par le réseau (nouvelles versions dès qu'on est connecté), sinon la copie en cache.
 // CACHE est réécrit par publish.ps1 avec la version du jeu.
-const CACHE = 'hexamulti-1.3';
+const CACHE = 'hexamulti-1.4';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', event => {
