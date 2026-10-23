@@ -278,6 +278,13 @@
   .rankEmpty { padding: 18px 8px; opacity: .75; font-size: 13px; }
   .prefList { display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; overflow-y: auto; }
   .prefList .mBtn { font-size: 14px; padding: 12px; }
+  .faq { flex: 1 1 auto; overflow-y: auto; text-align: left; font-size: 14px; line-height: 1.45; margin: 0 -4px; padding: 0 4px; }
+  .faq details { margin-bottom: 8px; padding: 9px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.07); }
+  .faq summary { cursor: pointer; font-weight: 800; }
+  .faq p { margin: 8px 0 0; opacity: .9; }
+  .faq ol { margin: 6px 0 0; padding-left: 22px; }
+  #panelFaq { overflow: hidden; }
+  #faqBack { margin-top: 12px; }
   .dangerZone { margin-top: 18px; padding: 8px 10px; border-radius: 14px; border: 1px dashed rgba(255, 120, 140, 0.45); text-align: left; }
   .dangerZone summary { cursor: pointer; font-size: 13px; font-weight: 800; color: #ffb0bb; }
   .dangerZone .dangerBtn { width: 100%; margin-top: 8px; font-size: 13px; background: rgba(255, 77, 109, 0.18); border-color: rgba(255, 77, 109, 0.5); }
@@ -292,6 +299,7 @@
   .pinInput { margin-top: 8px; letter-spacing: 4px; }
   .pinInput::placeholder { letter-spacing: 0; }
   .pinHelp { display: block; margin-top: 6px; font-size: 12px; opacity: .8; }
+  .chip.small { padding: 5px 9px; font-size: 11px; }
   .rankRow.tap { cursor: pointer; grid-template-columns: 64px 1fr auto; }
   .rankRow.tap::after { content: '›'; font-size: 20px; font-weight: 900; opacity: .5; }
   .topList { max-height: min(46vh, 380px); min-height: 0; margin: 4px -6px 0; }
@@ -382,6 +390,7 @@
     <div id="panelPrefs" class="panel">
       <div class="secTitle">Préférences</div>
       <div class="prefList">
+        <button id="prefFaq" class="mBtn">❓ Règles du jeu (FAQ)</button>
         <button id="prefPseudo" class="mBtn"></button>
         <button id="prefPin" class="mBtn"></button>
         <button id="prefLogin" class="mBtn">🔑 J’ai déjà un pseudo (autre appareil)</button>
@@ -396,6 +405,94 @@
         </details>
       </div>
       <button id="prefsBack" class="mBtn">← Retour</button>
+    </div>
+    <div id="panelFaq" class="panel">
+      <div class="secTitle">Règles du jeu</div>
+      <div class="faq">
+        <details open>
+          <summary>🎯 Le but du jeu</summary>
+          <p>Pose les piles du bas sur les cases libres du plateau. Quand <b>10 jetons ou plus de la même couleur</b>
+          se retrouvent les uns sur les autres en haut d'une pile, ils sont <b>collectés</b> : ce sont tes points.
+          En mode Niveaux, atteins l'objectif de points pour passer au niveau suivant.</p>
+        </details>
+        <details>
+          <summary>🔄 Qu'est-ce qui bouge quand je pose une pile ?</summary>
+          <p>Seule la <b>couleur du dessus</b> compte. Si ta pile a la même couleur au sommet qu'une ou plusieurs piles
+          voisines, elles fusionnent. Ce sont uniquement les jetons du dessus de cette couleur (le chiffre affiché sur la pile)
+          qui sautent d'une pile à l'autre, jamais ceux qui sont en dessous.</p>
+        </details>
+        <details>
+          <summary>🧭 Dans quel sens ? C'est du hasard ?</summary>
+          <p><b>Non, il n'y a aucun hasard</b> : une même situation donne toujours le même résultat.</p>
+          <p>Le jeu regarde tout le <b>groupe</b> de piles reliées (de voisine en voisine) qui ont la même couleur au sommet,
+          et choisit une <b>pile centrale</b> qui va tout recevoir :</p>
+          <ol>
+            <li>celle qui <b>touche le plus de piles</b> du groupe ;</li>
+            <li>à égalité, une pile <b>d'une seule couleur</b> passe en premier ;</li>
+            <li>encore à égalité, <b>la pile que tu viens de poser</b>.</li>
+          </ol>
+          <p>Tous les jetons convergent ensuite vers cette pile centrale, de proche en proche, en commençant par les plus éloignés.</p>
+          <p><b>Exemples :</b><br>
+          • Tu poses entre deux piles bleues qui ne se touchent pas : ta pile en touche deux, c'est elle qui reçoit tout.<br>
+          • Tu poses à côté d'une seule pile bleue : ta pile reçoit, sauf si la voisine est entièrement bleue (une seule couleur)
+          et la tienne non ; dans ce cas c'est ta pile qui part chez la voisine.</p>
+        </details>
+        <details>
+          <summary>📏 La hauteur des piles compte-t-elle ?</summary>
+          <p><b>Non.</b> Ni la hauteur des piles ni le nombre de jetons ne changent le sens. Seuls comptent, dans l'ordre :
+          le nombre de voisines du groupe, puis « pile d'une seule couleur », puis « pile que tu viens de poser ».</p>
+        </details>
+        <details>
+          <summary>⛓️ Les réactions en chaîne</summary>
+          <p>Quand des jetons quittent une pile, la couleur qui était en dessous apparaît au sommet. Si elle est identique
+          à celle d'une voisine, une nouvelle fusion démarre, et ainsi de suite : c'est le <b>combo</b>.
+          Tout s'arrête quand plus aucune pile n'a la même couleur au sommet que sa voisine.</p>
+        </details>
+        <details>
+          <summary>👆 Les pointillés et « voir derrière »</summary>
+          <p>Pendant que tu glisses une pile au-dessus d'une case, des <b>pointillés animés</b> montrent exactement
+          où vont partir les jetons (ils défilent dans le sens du déplacement). Ils sont calculés avec les mêmes règles
+          que le jeu : ce que tu vois est ce qui va se passer.</p>
+          <p>Une pile en cache une autre ? <b>Garde le doigt appuyé dessus</b> : elle devient transparente.</p>
+        </details>
+        <details>
+          <summary>🔥 Points, combos, fièvre et étoiles</summary>
+          <p>Chaque jeton collecté rapporte <b>10 points</b>, multipliés par le combo en cours :
+          ×1 (combo 1-2), ×2 (3-4), ×3 (5-6)… jusqu'à ×10. Chaque fusion ou collecte d'une même cascade augmente le combo.</p>
+          <p>Au <b>combo 5</b>, la <b>fièvre</b> s'allume : points ×2 pendant les 3 piles suivantes.</p>
+          <p>Étoiles d'un niveau : ★ gagné, ★★ avec un combo de 5, ★★★ avec un combo de 7.</p>
+        </details>
+        <details>
+          <summary>🎲 Les piles proposées</summary>
+          <p>C'est la seule part de hasard : les 3 piles du bas sont tirées au sort (2 à 7 jetons, jamais plus de
+          3 jetons de la même couleur à la suite, jamais 3 piles avec le même sommet).</p>
+        </details>
+        <details>
+          <summary>🔨 Les outils</summary>
+          <p><b>Marteau</b> : détruit une pile (ou un rocher). <b>Relancer</b> : remplace les 3 piles du bas.
+          Utiliser un outil, même une fois, range ta partie dans le classement « avec outils » ; sinon « sans outils ».
+          Tu peux jouer sans outils du tout dans les préférences.</p>
+        </details>
+        <details>
+          <summary>💀 Fin de partie</summary>
+          <p>La partie s'arrête quand il n'y a plus de case libre pour poser (le marteau peut te sauver s'il t'en reste).</p>
+        </details>
+        <details>
+          <summary>⚡ Les modes spéciaux</summary>
+          <p><b>Coups comptés</b> : 30 piles, fais le plus gros score.<br>
+          <b>Survie</b> : sans fin, des rochers tombent de plus en plus vite ; une collecte voisine les brise.<br>
+          <b>Chrono</b> : 90 secondes, +3 s par collecte.<br>
+          <b>Défi du jour</b> : le même plateau et les mêmes piles pour tout le monde, 25 piles.</p>
+        </details>
+        <details>
+          <summary>🏆 Classements, pseudo et code PIN</summary>
+          <p>Classements séparés avec et sans outils. Pour les modes : par jour, semaine, mois, année ou depuis toujours,
+          aux points ou au combo. Touche un niveau dans Classements → Niveaux pour voir son top 10.</p>
+          <p>Ton <b>code PIN</b> te permet de retrouver ton pseudo, tes niveaux débloqués et tes records sur un autre appareil
+          (« J'ai déjà un pseudo »). Note-le bien : personne ne peut te le redonner.</p>
+        </details>
+      </div>
+      <button id="faqBack" class="mBtn">← Retour</button>
     </div>
   </div>
 </div>
@@ -430,7 +527,7 @@
   const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   // Version du jeu : affichée sur l'accueil et lue par android/build-apk.ps1 pour numéroter l'APK.
   // À changer à chaque nouvelle version (une seule source de vérité).
-  const GAME_VERSION = '1.2';
+  const GAME_VERSION = '1.3';
 
   // Serveur des classements (Supabase). Vides tant que le projet n'est pas créé : le jeu fonctionne
   // alors hors ligne. Ajouter « ?mock=1 » à l'adresse simule un serveur local pour tester.
@@ -2005,6 +2102,7 @@
         `Prochain objectif : <b>${goalFor(state.level + 1)}</b>` + worldLineHtml(),
       buttons: [
         { label: 'Niveau suivant ▶', primary: true, onClick: () => startLevel(state.level + 1) },
+        { label: '↻ Rejouer le niveau', onClick: () => startLevel(state.level) },
         ...(Net.enabled() ? [{ label: '🏆 Top 10 du niveau', onClick: () => showBoardTop('level', lvlKey, lvlTitle, open) }] : []),
         { label: 'Menu des niveaux', onClick: () => { hideModal(); showHome(); } },
       ],
@@ -2074,6 +2172,29 @@
     return null;
   }
 
+  /*
+   * « Voir derrière » : tant qu'on garde le doigt (ou le clic) sur une pile du plateau, elle devient
+   * transparente pour laisser voir les piles et les cases qu'elle cache.
+   */
+  let peek = null; // { cell, pid, t0 }
+  function startPeek(e, p) {
+    const cell = pickStackCell(p);
+    if (!cell || !cell.stack.length) return;
+    e.preventDefault();
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    peek = { cell, pid: e.pointerId, t0: now };
+  }
+  function endPeek(e) {
+    if (peek && e.pointerId === peek.pid) peek = null;
+  }
+  canvas.addEventListener('pointerup', endPeek);
+  canvas.addEventListener('pointercancel', endPeek);
+  /** Opacité d'une pile du plateau (1, ou transparente pendant « voir derrière »). */
+  function peekAlpha(cell) {
+    if (!peek || peek.cell !== cell) return 1;
+    return lerp(1, 0.18, easeOutCubic(clamp((now - peek.t0) / 140, 0, 1)));
+  }
+
   canvas.addEventListener('pointerdown', e => {
     Sfx.init();
     if (state.modalOpen || state.homeOpen) return;
@@ -2089,7 +2210,7 @@
     if (state.mode === 'chrono' && state.timeLeft <= 0) return;
 
     const slot = pickDock(p);
-    if (slot < 0) return;
+    if (slot < 0) { startPeek(e, p); return; }
     e.preventDefault();
     try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
     const offY = e.pointerType === 'mouse' ? L.hex * 0.5 : L.hex * 1.6;
@@ -2368,6 +2489,37 @@
         const secret = Math.random().toString(36).slice(2);
         p.devices = [...(p.devices || []), secret].slice(-10);
         return { ok: true, player_id: p.id, secret, pseudo: p.pseudo };
+      },
+      get_board_period({ p_board, p_tag, p_period, p_ref, p_field, p_player, p_limit }) {
+        const start = (ref, period) => {
+          const [y, m, d] = ref.split('-').map(Number);
+          if (period === 'week') return shiftDay(ref, -((new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7));
+          if (period === 'month') return ref.slice(0, 7) + '-01';
+          if (period === 'year') return ref.slice(0, 4) + '-01-01';
+          return period === 'all' ? '2000-01-01' : ref;
+        };
+        const from = start(p_ref, p_period);
+        const to = p_period === 'all' ? '2999-12-31' : p_period === 'day' ? p_ref
+          : p_period === 'week' ? shiftDay(from, 6)
+          : p_period === 'month' ? shiftDay(new Date(Date.UTC(+from.slice(0, 4), +from.slice(5, 7), 1)).toISOString().slice(0, 10), -1)
+          : from.slice(0, 4) + '-12-31';
+        const best = new Map();
+        for (const s of db.scores) {
+          if (s.board !== p_board) continue;
+          const day = p_board === 'daily' ? s.bkey.slice(0, 10) : parisDate(new Date(s.at));
+          const okKey = p_board === 'daily' ? s.bkey.endsWith(':' + p_tag) : s.bkey === 'all:' + p_tag;
+          if (!okKey || day < from || day > to) continue;
+          const b = best.get(s.player_id);
+          if (!b || s[p_field] > b[p_field]) best.set(s.player_id, s);
+        }
+        const list = [...best.values()].sort((a, b) => b[p_field] - a[p_field] || a.at - b.at)
+          .map((s, i) => ({ rank: i + 1, player_id: s.player_id, pseudo: pseudoOf(s.player_id), score: s.score, combo: s.combo }));
+        const mine = list.find(x => x.player_id === p_player);
+        return {
+          ok: true, from, to,
+          top: list.slice(0, p_limit).map(({ player_id, ...x }) => x),
+          me: mine ? { rank: mine.rank, score: mine.score, combo: mine.combo, total: list.length } : null,
+        };
       },
       save_progress({ p_player, p_secret, p_data }) {
         const p = auth(p_player, p_secret);
@@ -2908,13 +3060,59 @@
 
   /* ---------------- Onglet Classements ---------------- */
   const RANK_BOARDS = [['level', '🗺️ Niveaux'], ['moves', '🎯 Coups'], ['survival', '🔥 Survie'], ['chrono', '⏱️ Chrono'], ['daily', '📅 Défi']];
-  const rankView = { board: 'daily', tag: 'n', day: null, diff: null };
+  const PERIODS = [['day', 'Jour'], ['week', 'Semaine'], ['month', 'Mois'], ['year', 'Année'], ['all', 'Toujours']];
+  // Modes spéciaux : période (jour → toujours) autour du jour de référence `ref`, classés aux points ou au combo
+  const rankView = { board: 'daily', tag: 'n', diff: null, period: 'day', ref: null, field: 'score' };
   let rankReq = 0;
+
+  /** Jour de référence décalé d'une période (◀ ▶). */
+  function shiftPeriod(ref, period, step) {
+    const [y, m, d] = ref.split('-').map(Number);
+    if (period === 'day') return shiftDay(ref, step);
+    if (period === 'week') return shiftDay(ref, step * 7);
+    if (period === 'month') return new Date(Date.UTC(y, m - 1 + step, 1)).toISOString().slice(0, 10);
+    if (period === 'year') return new Date(Date.UTC(y + step, 0, 1)).toISOString().slice(0, 10);
+    return ref;
+  }
+  /** Premier jour de la période contenant `ref` (semaines du lundi au dimanche, comme le serveur). */
+  function periodStart(ref, period) {
+    const [y, m, d] = ref.split('-').map(Number);
+    if (period === 'week') {
+      const dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7; // lundi = 0
+      return shiftDay(ref, -dow);
+    }
+    if (period === 'month') return `${ref.slice(0, 7)}-01`;
+    if (period === 'year') return `${ref.slice(0, 4)}-01-01`;
+    return ref;
+  }
+  const fmtDay = key => key.split('-').reverse().join('/');
+  function periodLabel(ref, period) {
+    const today = todayKey();
+    const [y, m] = ref.split('-').map(Number);
+    if (period === 'day') return ref === today ? 'Aujourd’hui' : fmtDay(ref);
+    if (period === 'week') {
+      const from = periodStart(ref, 'week');
+      return from === periodStart(today, 'week') ? 'Cette semaine' : `Semaine du ${fmtDay(from).slice(0, 5)} au ${fmtDay(shiftDay(from, 6)).slice(0, 5)}`;
+    }
+    if (period === 'month') {
+      const name = new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+      return name.charAt(0).toUpperCase() + name.slice(1);
+    }
+    if (period === 'year') return String(y);
+    return 'Depuis toujours';
+  }
 
   function renderRankChips() {
     const chips = RANK_BOARDS.map(([k, label]) => `<button class="chip${rankView.board === k ? ' active' : ''}" data-board="${k}">${label}</button>`).join('');
     const tags = ['n', 't'].map(t => `<button class="chip${rankView.tag === t ? ' active' : ''}" data-tag="${t}">${t === 'n' ? '🚫 Sans outils' : '🔨 Avec outils'}</button>`).join('');
-    $('rankChips').innerHTML = chips + '<span style="flex-basis:100%"></span>' + tags;
+    let html = chips + '<span style="flex-basis:100%"></span>' + tags;
+    if (rankView.board !== 'level') {
+      html += '<span style="flex-basis:100%"></span>' +
+        PERIODS.map(([k, label]) => `<button class="chip small${rankView.period === k ? ' active' : ''}" data-period="${k}">${label}</button>`).join('') +
+        '<span style="flex-basis:100%"></span>' +
+        [['score', '⭐ Points'], ['combo', '🔥 Combo']].map(([k, label]) => `<button class="chip small${rankView.field === k ? ' active' : ''}" data-field="${k}">${label}</button>`).join('');
+    }
+    $('rankChips').innerHTML = html;
   }
   $('rankChips').addEventListener('click', e => {
     const b = e.target.closest('.chip');
@@ -2922,6 +3120,8 @@
     Sfx.init(); Sfx.click();
     if (b.dataset.board) rankView.board = b.dataset.board;
     if (b.dataset.tag) rankView.tag = b.dataset.tag;
+    if (b.dataset.period) { rankView.period = b.dataset.period; rankView.ref = todayKey(); }
+    if (b.dataset.field) rankView.field = b.dataset.field;
     loadRanks();
   });
   $('rankHead').addEventListener('click', e => {
@@ -2929,10 +3129,11 @@
     if (!b || b.disabled) return;
     Sfx.init(); Sfx.click();
     const step = Number(b.dataset.step);
-    if (rankView.board === 'daily') rankView.day = shiftDay(rankView.day, step);
-    else {
+    if (rankView.board === 'level') {
       const i = DIFF_ORDER.indexOf(rankView.diff);
       rankView.diff = DIFF_ORDER[(i + step + DIFF_ORDER.length) % DIFF_ORDER.length];
+    } else {
+      rankView.ref = shiftPeriod(rankView.ref, rankView.period, step);
     }
     loadRanks();
   });
@@ -2949,20 +3150,21 @@
 
   async function loadRanks() {
     const today = todayKey();
-    if (!rankView.day) rankView.day = today;
+    if (!rankView.ref) rankView.ref = today;
     if (!rankView.diff) rankView.diff = state.diff;
     renderRankChips();
     const list = $('rankList');
     const note = $('rankNote');
     const board = rankView.board;
-    // En-tête : jour (défi) ou difficulté (niveaux), avec flèches
-    if (board === 'daily') {
-      $('rankHead').innerHTML = `<button data-step="-1" aria-label="Jour précédent">◀</button><span>${rankView.day === today ? 'Aujourd’hui' : rankView.day.split('-').reverse().join('/')}</span>` +
-        `<button data-step="1" aria-label="Jour suivant"${rankView.day >= today ? ' disabled' : ''}>▶</button>`;
-    } else if (board === 'level') {
+    // En-tête : difficulté (niveaux) ou période (modes spéciaux), avec flèches
+    if (board === 'level') {
       $('rankHead').innerHTML = `<button data-step="-1" aria-label="Difficulté précédente">◀</button><span>${DIFFICULTIES[rankView.diff].name}</span><button data-step="1" aria-label="Difficulté suivante">▶</button>`;
+    } else if (rankView.period === 'all') {
+      $('rankHead').innerHTML = '<span>Top 10 de tous les temps</span>';
     } else {
-      $('rankHead').innerHTML = `<span>Top 10 de tous les temps</span>`;
+      const last = periodStart(rankView.ref, rankView.period) >= periodStart(today, rankView.period);
+      $('rankHead').innerHTML = `<button data-step="-1" aria-label="Période précédente">◀</button><span>${periodLabel(rankView.ref, rankView.period)}</span>` +
+        `<button data-step="1" aria-label="Période suivante"${last ? ' disabled' : ''}>▶</button>`;
     }
     note.textContent = (save.profile.pseudo ? `Tu joues sous le pseudo « ${save.profile.pseudo} ».` : 'Choisis un pseudo dans ⚙️ pour apparaître ici.') +
       (board === 'level' ? ' Touche un niveau pour voir son top 10.' : '');
@@ -2982,18 +3184,22 @@
           : '<div class="rankEmpty">Aucun record pour l’instant : à toi de jouer !</div>';
         return;
       }
-      const key = board === 'daily' ? `${rankView.day}:${rankView.tag}` : `all:${rankView.tag}`;
-      const [top, mine] = await Promise.all([
-        Net.rpc('get_top', { p_board: board, p_key: key, p_limit: 10 }),
-        save.profile.playerId ? Net.rpc('get_my_rank', { p_player: save.profile.playerId, p_board: board, p_key: key }) : Promise.resolve(null),
-      ]);
+      const field = rankView.field;
+      const r = await Net.rpc('get_board_period', {
+        p_board: board, p_tag: rankView.tag, p_period: rankView.period, p_ref: rankView.ref, p_field: field,
+        p_player: save.profile.playerId || null, p_limit: 10,
+      });
       if (req !== rankReq) return;
+      if (!r || !r.ok) throw new Error('classement');
+      const top = r.top || [];
       const me = save.profile.pseudo.toLowerCase();
-      let html = top.map(r => `<div class="rankRow${r.pseudo.toLowerCase() === me ? ' me' : ''}"><span class="pos">${r.rank <= 3 ? ['🥇', '🥈', '🥉'][r.rank - 1] : r.rank}</span>` +
-        `<span class="who">${esc(r.pseudo)}<small>combo ×${r.combo}</small></span><span class="pts">${fmtNum(r.score)}</span></div>`).join('');
-      if (!top.length) html = '<div class="rankEmpty">Personne pour l’instant : sois le premier !</div>';
-      if (mine && mine.rank && mine.rank > 10) {
-        html += `<div class="rankRow me"><span class="pos">${mine.rank}</span><span class="who">${esc(save.profile.pseudo)}<small>sur ${mine.total} joueurs</small></span><span class="pts">${fmtNum(mine.score)}</span></div>`;
+      const value = x => (field === 'score' ? fmtNum(x.score) : '×' + x.combo);
+      const other = x => (field === 'score' ? `combo ×${x.combo}` : `${fmtNum(x.score)} pts`);
+      let html = top.map(x => `<div class="rankRow${x.pseudo.toLowerCase() === me ? ' me' : ''}"><span class="pos">${x.rank <= 3 ? ['🥇', '🥈', '🥉'][x.rank - 1] : x.rank}</span>` +
+        `<span class="who">${esc(x.pseudo)}<small>${other(x)}</small></span><span class="pts">${value(x)}</span></div>`).join('');
+      if (!top.length) html = '<div class="rankEmpty">Personne sur cette période : à toi de jouer !</div>';
+      if (r.me && r.me.rank > 10) {
+        html += `<div class="rankRow me"><span class="pos">${r.me.rank}</span><span class="who">${esc(save.profile.pseudo)}<small>sur ${r.me.total} joueurs</small></span><span class="pts">${value(r.me)}</span></div>`;
       }
       list.innerHTML = html;
     } catch (_) {
@@ -3013,12 +3219,12 @@
   let homeTab = 'levels';
 
   function applyTab() {
-    const panels = { levels: 'panelLevels', modes: 'panelModes', ranks: 'panelRanks', prefs: 'panelPrefs' };
+    const panels = { levels: 'panelLevels', modes: 'panelModes', ranks: 'panelRanks', prefs: 'panelPrefs', faq: 'panelFaq' };
     $('tabLevels').classList.toggle('active', homeTab === 'levels');
     $('tabModes').classList.toggle('active', homeTab === 'modes');
     $('tabRanks').classList.toggle('active', homeTab === 'ranks');
     for (const [tab, id] of Object.entries(panels)) $(id).classList.toggle('show', homeTab === tab);
-    $('homeTabs').style.display = homeTab === 'prefs' ? 'none' : '';
+    $('homeTabs').style.display = homeTab === 'prefs' || homeTab === 'faq' ? 'none' : '';
     if (homeTab === 'ranks') loadRanks();
   }
   $('tabLevels').addEventListener('click', () => { Sfx.init(); Sfx.click(); homeTab = 'levels'; applyTab(); scrollToCurrentLevel(); });
@@ -3026,6 +3232,8 @@
   $('tabRanks').addEventListener('click', () => { Sfx.init(); Sfx.click(); homeTab = 'ranks'; applyTab(); });
   $('btnPrefs').addEventListener('click', () => { Sfx.init(); Sfx.click(); homeTab = homeTab === 'prefs' ? 'levels' : 'prefs'; renderHome(); applyTab(); });
   $('prefsBack').addEventListener('click', () => { Sfx.init(); Sfx.click(); homeTab = 'levels'; applyTab(); scrollToCurrentLevel(); });
+  $('prefFaq').addEventListener('click', () => { Sfx.init(); Sfx.click(); homeTab = 'faq'; applyTab(); $('panelFaq').querySelector('.faq').scrollTop = 0; });
+  $('faqBack').addEventListener('click', () => { Sfx.init(); Sfx.click(); homeTab = 'prefs'; applyTab(); });
   $('prefPseudo').addEventListener('click', () => { Sfx.init(); Sfx.click(); askPseudo(false); });
   $('prefPin').addEventListener('click', () => {
     Sfx.init(); Sfx.click();
@@ -3259,6 +3467,45 @@
     c.restore();
   }
 
+  /**
+   * Pile rendue transparente (appui maintenu) : seulement le contour coloré de chaque jeton (des jetons
+   * semi-transparents empilés redeviendraient opaques), le contour pointillé du sommet et le compteur.
+   * `alpha` (de 1 à 0,18) fait le fondu entre la pile pleine et ce « fil de fer ».
+   */
+  function drawPeekedStack(c, cell, alpha) {
+    const fade = (1 - alpha) / 0.82; // 0 = pile pleine, 1 = fil de fer
+    if (fade < 1) {
+      c.save();
+      c.globalAlpha = 1 - fade;
+      drawStack(c, cell.cx, cell.cy, cell.stack, false);
+      c.restore();
+    }
+    // Prisme creux : contours pointillés du dessus et du dessous, arêtes gauche et droite aux couleurs
+    // de la pile (de bas en haut). L'intérieur reste vide : on voit tout ce qui est derrière.
+    const top = cell.cy - cell.stack.length * L.th;
+    const r = L.tile;
+    c.save();
+    c.globalAlpha = fade;
+    c.lineCap = 'butt';
+    c.lineWidth = Math.max(3, L.hex * 0.11);
+    for (let i = 0; i < cell.stack.length; i++) {
+      const y0 = cell.cy - i * L.th, y1 = y0 - L.th;
+      c.strokeStyle = PALETTE[cell.stack[i]].light;
+      c.beginPath();
+      c.moveTo(cell.cx - r, y0); c.lineTo(cell.cx - r, y1);
+      c.moveTo(cell.cx + r, y0); c.lineTo(cell.cx + r, y1);
+      c.stroke();
+    }
+    c.setLineDash([5, 5]);
+    c.lineWidth = Math.max(1.5, L.hex * 0.05);
+    c.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+    hexPath(c, r, cell.cx, top);
+    c.stroke();
+    hexPath(c, r, cell.cx, cell.cy);
+    c.stroke();
+    c.restore();
+  }
+
   function drawBoard(c) {
     // Halo sous le plateau
     c.fillStyle = glowGrad;
@@ -3286,6 +3533,8 @@
     for (const cell of state.drawOrder) {
       if (cell.rock) { drawRock(c, cell); continue; }
       if (!cell.stack.length) continue;
+      const alpha = peekAlpha(cell);
+      if (alpha < 1) { drawPeekedStack(c, cell, alpha); continue; }
       const tp = (now - cell.placedAt) / 260;
       const bounce = tp >= 0 && tp < 1 ? -Math.sin(tp * Math.PI) * L.hex * 0.18 * (1 - tp) : 0;
       // Écrasement élastique à chaque atterrissage + gonflement pendant le temps fort
@@ -3469,66 +3718,44 @@
   }
 
   /**
-   * Flèches « qui va où » : de chaque pile qui se vide vers celle qui reçoit ses jetons.
-   * Répond à la question « ma pile part chez la voisine, ou la voisine vient sur la mienne ? » avant de lâcher.
+   * Pointillés animés « qui va où » : de chaque pile qui se vide vers celle qui reçoit ses jetons,
+   * les tirets défilent dans le sens du déplacement. Répond à « ma pile part chez la voisine,
+   * ou la voisine vient sur la mienne ? » avant de lâcher.
    */
   function drawMergeArrows(c) {
     const preview = currentPreview();
     if (!preview) return;
     const col = PALETTE[preview.color];
     const k = L.hex;
+    const w = Math.max(4, k * 0.16);
+    const dash = Math.max(8, k * 0.32);
+    const gap = dash * 0.75;
     preview.moves.forEach((m, i) => {
       const a = previewTop(m.src);
       const b = previewTop(m.dst);
       const dx = b.x - a.x, dy = b.y - a.y;
       const len = Math.hypot(dx, dy) || 1;
       const ux = dx / len, uy = dy / len;
-      // Extrémités raccourcies et courbe en arc (comme le saut des jetons)
-      const sx = a.x + ux * k * 0.28, sy = a.y + uy * k * 0.28;
-      const ex = b.x - ux * k * 0.22, ey = b.y - uy * k * 0.22;
-      const cx = (sx + ex) / 2, cy = (sy + ey) / 2 - Math.min(k * 0.9, len * 0.35);
-      // Petite pulsation décalée d'une flèche à l'autre : on lit l'ordre de la cascade
-      const t = ((now / 900) + i * 0.18) % 1;
-      const w = Math.max(4, k * 0.18);
-      // Direction de la pointe = tangente de la courbe à l'arrivée
-      const tx = ex - cx, ty = ey - cy;
-      const tl = Math.hypot(tx, ty) || 1;
-      const hx = tx / tl, hy = ty / tl;
-      const head = Math.max(13, k * 0.6);
-      const bx = ex - hx * head * 0.8, by = ey - hy * head * 0.8;
+      // Extrémités légèrement rentrées et courbe en arc (comme le saut des jetons)
+      const sx = a.x + ux * k * 0.25, sy = a.y + uy * k * 0.25;
+      const ex = b.x - ux * k * 0.3, ey = b.y - uy * k * 0.3;
+      const cx = (sx + ex) / 2, cy = (sy + ey) / 2 - Math.min(k * 1.1, len * 0.5);
+      // Les tirets avancent de la source vers la destination ; décalage d'une ligne à l'autre = ordre de la cascade
+      const offset = -((now / 18) + i * dash * 0.6) % (dash + gap);
       c.save();
       c.lineCap = 'round';
-      c.lineJoin = 'round';
-      // Contour sombre puis trait clair : lisible sur toutes les couleurs
+      c.setLineDash([dash, gap]);
+      c.lineDashOffset = offset;
       c.shadowColor = col.light;
       c.shadowBlur = k * 0.25;
-      for (const [stroke, width] of [['rgba(20, 10, 40, 0.9)', w + 5], [col.light, w]]) {
+      for (const [stroke, width] of [['rgba(20, 10, 40, 0.9)', w + 4], [col.light, w]]) {
         c.strokeStyle = stroke;
         c.lineWidth = width;
         c.beginPath();
         c.moveTo(sx, sy);
-        c.quadraticCurveTo(cx, cy, bx, by);
+        c.quadraticCurveTo(cx, cy, ex, ey);
         c.stroke();
       }
-      c.beginPath();
-      c.moveTo(ex, ey);
-      c.lineTo(bx - hy * head * 0.55, by + hx * head * 0.55);
-      c.lineTo(bx + hy * head * 0.55, by - hx * head * 0.55);
-      c.closePath();
-      c.lineWidth = 5;
-      c.strokeStyle = 'rgba(20, 10, 40, 0.9)';
-      c.stroke();
-      c.fillStyle = col.light;
-      c.fill();
-      // Jeton lumineux qui glisse le long de la flèche
-      const q = easeInOutQuad(t);
-      const px = (1 - q) * (1 - q) * sx + 2 * (1 - q) * q * cx + q * q * bx;
-      const py = (1 - q) * (1 - q) * sy + 2 * (1 - q) * q * cy + q * q * by;
-      c.globalAlpha = Math.sin(t * Math.PI);
-      c.fillStyle = '#ffffff';
-      c.beginPath();
-      c.ellipse(px, py, w * 0.9, w * 0.9 * ISO_SCALE_Y, 0, 0, Math.PI * 2);
-      c.fill();
       c.restore();
     });
   }
