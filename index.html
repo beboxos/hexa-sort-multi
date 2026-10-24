@@ -221,6 +221,13 @@
   .secTitle { margin: 4px 0 10px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; opacity: .7; font-weight: 800; }
   #puzzleGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 10px; }
   #puzzleResume { margin: 0 0 10px; }
+  .seasonGreet { margin: -10px 0 12px; font-size: 15px; font-weight: 900; letter-spacing: .02em; }
+  body.season-halloween .homeCard { border-color: rgba(255, 140, 40, 0.65); box-shadow: 0 0 30px rgba(255, 120, 20, 0.35), 0 20px 60px rgba(0,0,0,.5); }
+  body.season-halloween .seasonGreet { color: #ff9a3c; }
+  body.season-noel .homeCard { border-color: rgba(120, 230, 160, 0.6); box-shadow: 0 0 30px rgba(60, 200, 110, 0.3), 0 20px 60px rgba(0,0,0,.5); }
+  body.season-noel .seasonGreet { color: #ff8a8a; }
+  body.season-nouvelan .homeCard { border-color: rgba(255, 215, 90, 0.7); box-shadow: 0 0 30px rgba(255, 210, 80, 0.35), 0 20px 60px rgba(0,0,0,.5); }
+  body.season-nouvelan .seasonGreet { color: #ffe066; }
   #updateBar { width: 100%; margin: -6px 0 12px; font-size: 14px; padding: 10px; }
   #puzzleBack { margin-top: 12px; }
   #levelGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 10px; }
@@ -368,6 +375,7 @@
     <button id="btnPrefs" class="cornerBtn right" aria-label="Préférences">⚙️</button>
     <h1>Hexa <span>Sort</span><small class="multi">MULTI</small><small class="ver" id="gameVersion"></small></h1>
     <p class="tag" id="homeTag">Trie, enchaîne, explose.</p>
+    <p class="seasonGreet" id="seasonGreet" hidden></p>
     <button id="updateBar" class="mBtn primary" hidden></button>
     <div id="homeTabs" role="tablist" aria-label="Type de partie">
       <button id="tabLevels" class="homeTab active" role="tab">🗺️ Niveaux</button>
@@ -491,7 +499,9 @@
         </details>
         <details>
           <summary>⚡ Les modes spéciaux</summary>
-          <p><b>Coups comptés</b> : 30 piles, fais le plus gros score.<br>
+          <p><b>Monde infini</b> : une partie sans fin, qui ne s'arrête que quand le plateau est plein (une 6e couleur arrive
+          après 150 piles). Quitte et reprends quand tu veux : ton score part au classement toutes les 25 piles.<br>
+          <b>Coups comptés</b> : 30 piles, fais le plus gros score.<br>
           <b>Survie</b> : sans fin, des rochers tombent de plus en plus vite ; une collecte voisine les brise.<br>
           <b>Chrono</b> : 90 secondes, +3 s par collecte.<br>
           <b>Défi du jour</b> : le même pour tout le monde, mais la formule change chaque jour : nombre de piles ou chrono,
@@ -549,7 +559,7 @@
   const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   // Version du jeu : affichée sur l'accueil et lue par android/build-apk.ps1 pour numéroter l'APK.
   // À changer à chaque nouvelle version (une seule source de vérité).
-  const GAME_VERSION = '1.5';
+  const GAME_VERSION = '1.6';
 
   // Serveur des classements (Supabase). Vides tant que le projet n'est pas créé : le jeu fonctionne
   // alors hors ligne. Ajouter « ?mock=1 » à l'adresse simule un serveur local pour tester.
@@ -1001,13 +1011,20 @@
       colors: () => 5,
       desc: '90 secondes au compteur. Chaque collecte rajoute 3 secondes.',
     },
+    endless: {
+      name: 'Monde infini', short: 'Infini', icon: '♾️', radius: 3, prefill: 0.4, tools: 2,
+      colors: () => (state.turn >= ENDLESS_SIXTH_COLOR ? 6 : 5),
+      desc: 'Une partie sans fin : elle ne s’arrête que quand le plateau est plein. Quitte et reprends quand tu veux, ton score monte au classement au fil de la partie.',
+    },
     daily: {
       name: 'Défi du jour', short: 'Défi', icon: '📅', radius: 3, prefill: 0.55, tools: 1, moves: 25,
       colors: () => 5,
       desc: 'Le même plateau et les mêmes piles pour tout le monde aujourd’hui. 25 piles pour faire ton meilleur score.',
     },
   };
-  const MODE_ORDER = ['moves', 'survival', 'chrono', 'daily'];
+  const MODE_ORDER = ['endless', 'moves', 'survival', 'chrono', 'daily'];
+  const ENDLESS_SIXTH_COLOR = 150; // Monde infini : une 6e couleur arrive après 150 piles
+  const ENDLESS_SEND_EVERY = 25;   // Monde infini : score envoyé au classement toutes les 25 piles
   const isSpecial = () => state.mode !== 'levels';
   const rules = () => (!isSpecial() ? diff()
     : state.mode === 'daily' ? dailyRules(state.dailyDate || todayKey())
@@ -1403,6 +1420,7 @@
     state.toolsUsed = false;
     state.moveCount = 0;
     state.dailyLog = [];
+    state.endlessSent = 0; // Monde infini : dernier score envoyé au classement
     worldText = '';
     state.lastShrinkTurn = 0;
     state.nextRockTurn = rockInterval(0);
@@ -1984,6 +2002,10 @@
       if (rockHpAt(t) > rockHpAt(t - 1)) banner('Rochers renforcés !', '#a3a7bf', 0.8);
       if (survivalColors(t) > survivalColors(t - 1)) banner('Nouvelle couleur !', '#67e8f9', 0.8);
     }
+    if (state.mode === 'endless' && state.turn > 0 && state.turn % ENDLESS_SEND_EVERY === 0) {
+      if (state.turn === ENDLESS_SIXTH_COLOR) banner('Nouvelle couleur !', '#67e8f9', 0.8);
+      sendEndlessScore();
+    }
     if (!state.cells.some(isFreeCell)) { specialFull(); return; }
     saveGame();
   }
@@ -2421,6 +2443,16 @@
     if (live) $('puzzleResume').textContent = `Continuer · Puzzle ${state.level}`;
   }
 
+  /**
+   * Monde infini : la partie peut durer des jours. Son score est envoyé au classement en cours de route
+   * (toutes les 25 piles et quand on revient à l'accueil), le serveur garde le meilleur de chaque joueur.
+   */
+  function sendEndlessScore() {
+    if (state.mode !== 'endless' || state.over || state.score <= (state.endlessSent || 0)) return;
+    state.endlessSent = state.score;
+    submitScore({ board: 'endless', bkey: `all:${toolsTag()}`, score: state.score, combo: state.levelBestCombo, turns: Math.max(1, state.moveCount) });
+  }
+
   /* ---------------- Fin d'une partie en mode spécial ---------------- */
   function specialFull() {
     if (state.hammers <= 0) { endSpecial('full'); return; }
@@ -2453,7 +2485,7 @@
     persist();
     scheduleCloudSave();
     const why = { moves: 'Toutes les piles ont été posées.', time: 'Temps écoulé !', full: 'Plus aucune case libre.' }[reason];
-    const extra = state.mode === 'survival' ? `<br>Tu as tenu <b>${state.turn}</b> piles` : '';
+    const extra = state.mode === 'survival' || state.mode === 'endless' ? `<br>Tu as tenu <b>${state.turn}</b> piles` : '';
     if (isRecord) { Sfx.win(); confetti(); } else Sfx.lose();
     // Classement en ligne : score envoyé (ou mis en attente), ligne mise à jour à la réponse
     if (state.score > 0) {
@@ -3564,7 +3596,7 @@
   }
 
   /* ---------------- Onglet Classements ---------------- */
-  const RANK_BOARDS = [['level', '🗺️ Niveaux'], ['moves', '🎯 Coups'], ['survival', '🔥 Survie'], ['chrono', '⏱️ Chrono'], ['daily', '📅 Défi']];
+  const RANK_BOARDS = [['level', '🗺️ Niveaux'], ['endless', '♾️ Infini'], ['moves', '🎯 Coups'], ['survival', '🔥 Survie'], ['chrono', '⏱️ Chrono'], ['daily', '📅 Défi']];
   const PERIODS = [['day', 'Jour'], ['week', 'Semaine'], ['month', 'Mois'], ['year', 'Année'], ['all', 'Toujours']];
   // Modes spéciaux : période (jour → toujours) autour du jour de référence `ref`, classés aux points ou au combo
   const rankView = { board: 'daily', tag: 'n', diff: null, period: 'day', ref: null, field: 'score' };
@@ -3914,6 +3946,7 @@
 
   function showHome() {
     setHammerMode(false);
+    sendEndlessScore(); // on quitte le Monde infini : son score part au classement
     if (isSpecial()) homeTab = state.mode === 'puzzle' ? 'puzzle' : 'modes';
     renderHome();
     applyTab();
@@ -4477,11 +4510,120 @@
     c.restore();
   }
 
+  /* =====================================================================
+   * Décorations de saison (v1.6) : Halloween, Noël, Nouvel an — 4 jours avant et après la fête.
+   * Dessinées derrière le plateau, discrètes ; allégées en « Effets réduits ».
+   * Aperçu à tout moment : ?theme=halloween | noel | nouvelan (ou ?theme=aucun pour les couper).
+   * ===================================================================== */
+  const SEASONS = {
+    halloween: {
+      greet: () => '🎃 Joyeux Halloween !', emojis: ['🎃', '🦇', '👻', '🕸️', '🍬'], rise: true,
+      tint: ['rgba(255, 120, 20, 0.22)', 'rgba(110, 20, 140, 0.10)'],
+    },
+    noel: {
+      greet: () => '🎄 Joyeux Noël !', emojis: ['🎄', '🎁', '⭐', '🔔', '⛄'], snow: true,
+      tint: ['rgba(40, 170, 90, 0.16)', 'rgba(210, 30, 50, 0.12)'],
+    },
+    nouvelan: {
+      greet: () => {
+        const [y, m] = todayKey().split('-').map(Number);
+        return `🎆 Bonne année ${m === 12 ? y + 1 : y} !`;
+      },
+      emojis: ['🥂', '✨', '🎉', '🍾', '🎆'], fireworks: true,
+      tint: ['rgba(255, 210, 80, 0.16)', 'rgba(80, 60, 200, 0.12)'],
+    },
+  };
+  function currentSeason() {
+    const forced = new URLSearchParams(location.search).get('theme');
+    if (forced) return SEASONS[forced] ? forced : null;
+    const md = todayKey().slice(5); // MM-JJ, heure de Paris
+    if (md >= '10-27' && md <= '11-04') return 'halloween';
+    if (md >= '12-21' && md <= '12-27') return 'noel';
+    if (md >= '12-28' || md <= '01-05') return 'nouvelan';
+    return null;
+  }
+  const seasonKey = currentSeason();
+  const season = seasonKey ? SEASONS[seasonKey] : null;
+  // Petite valeur pseudo-aléatoire stable (position des décorations sans rien mémoriser)
+  const fract = x => x - Math.floor(x);
+  const noise = i => fract(Math.sin(i * 127.1 + 311.7) * 43758.5453);
+
+  /** Décor de saison derrière le plateau : teinte, emojis qui flottent, neige ou feux d'artifice. */
+  function drawSeason(c) {
+    if (!season) return;
+    const t = performance.now() / 1000;
+    // Teinte de fond
+    const g = c.createRadialGradient(W / 2, H * 0.3, 0, W / 2, H * 0.3, Math.max(W, H) * 0.9);
+    g.addColorStop(0, season.tint[0]);
+    g.addColorStop(1, season.tint[1]);
+    c.fillStyle = g;
+    c.fillRect(0, 0, W, H);
+    // Emojis qui dérivent lentement (montent pour Halloween, descendent sinon)
+    const n = save.lowFx ? 6 : 12;
+    const size = Math.max(18, Math.min(W, H) * 0.06);
+    c.save();
+    c.globalAlpha = 0.22;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.font = `${Math.round(size)}px ${FONT}`;
+    for (let i = 0; i < n; i++) {
+      const speed = 0.012 + noise(i + 1) * 0.02;
+      const fy = fract(noise(i + 7) + t * speed);
+      const y = (season.rise ? 1.1 - fy * 1.2 : fy * 1.2 - 0.1) * H;
+      const x = (noise(i + 3) * 1.1 - 0.05) * W + Math.sin(t * 0.6 + i) * size * 0.6;
+      c.fillText(season.emojis[i % season.emojis.length], x, y);
+    }
+    c.restore();
+    // Neige
+    if (season.snow) {
+      const flakes = save.lowFx ? 25 : 70;
+      c.save();
+      c.fillStyle = '#ffffff';
+      for (let i = 0; i < flakes; i++) {
+        const sp = 0.04 + noise(i + 50) * 0.06;
+        const y = fract(noise(i + 90) + t * sp) * (H + 20) - 10;
+        const x = noise(i + 130) * W + Math.sin(t * (0.5 + noise(i)) + i) * 12;
+        const r = 1 + noise(i + 170) * 2.2;
+        c.globalAlpha = 0.35 + noise(i + 210) * 0.4;
+        c.beginPath();
+        c.arc(x, y, r, 0, Math.PI * 2);
+        c.fill();
+      }
+      c.restore();
+    }
+    // Feux d'artifice : une gerbe toutes les 2,6 s, à une place différente à chaque fois
+    if (season.fireworks) {
+      const period = save.lowFx ? 4 : 2.6;
+      c.save();
+      c.globalCompositeOperation = 'lighter';
+      for (let k = 0; k < 2; k++) {
+        const tt = t + k * period / 2;
+        const idx = Math.floor(tt / period);
+        const ph = fract(tt / period);
+        const cx = (0.15 + noise(idx * 3 + k) * 0.7) * W;
+        const cy = (0.08 + noise(idx * 5 + k) * 0.3) * H;
+        const hue = Math.floor(noise(idx * 7 + k) * 360);
+        const rays = save.lowFx ? 12 : 22;
+        const rad = Math.min(W, H) * 0.16 * Math.sqrt(ph);
+        c.globalAlpha = Math.max(0, 1 - ph) * 0.55;
+        c.fillStyle = `hsl(${hue}, 95%, 65%)`;
+        for (let j = 0; j < rays; j++) {
+          const a = (j / rays) * Math.PI * 2;
+          c.beginPath();
+          c.arc(cx + Math.cos(a) * rad, cy + Math.sin(a) * rad + ph * ph * 30, 2.2, 0, Math.PI * 2);
+          c.fill();
+        }
+      }
+      c.restore();
+    }
+  }
+
   function render() {
     const c = ctx;
     c.setTransform(DPR, 0, 0, DPR, 0, 0);
     c.fillStyle = bgGrad;
     c.fillRect(0, 0, W, H);
+    drawSeason(c);
     if (state.feverOn) {
       const hue = (now / 10) % 360;
       const g = c.createRadialGradient(W / 2, H * 0.45, 0, W / 2, H * 0.45, Math.max(W, H) * 0.75);
@@ -4678,6 +4820,12 @@
         num = Math.ceil(state.timeLeft / 1000);
         pct = state.timeLeft / (m.time * 1000);
         danger = state.timeLeft <= 10000 && !state.over;
+      } else if (state.mode === 'endless') {
+        num = state.turn;
+        // La jauge montre la place libre ; elle passe au rouge quand le plateau est presque plein
+        const free = state.cells.filter(isFreeCell).length;
+        pct = free / state.cells.length;
+        danger = free <= 3 && !state.over;
       } else {
         num = state.turn;
         // La jauge se remplit jusqu'au prochain rocher et passe au rouge juste avant sa chute
@@ -4746,6 +4894,11 @@
   Sfx.muted = save.muted;
   $('diffName').textContent = diff().name;
   $('gameVersion').textContent = 'v' + GAME_VERSION;
+  if (season) {
+    document.body.classList.add('season-' + seasonKey);
+    $('seasonGreet').textContent = season.greet();
+    $('seasonGreet').hidden = false;
+  }
   renderSoundIcon();
   layout();
   // Le plateau de la partie sauvegardée (ou du dernier niveau débloqué) s'anime derrière l'accueil
