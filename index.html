@@ -559,7 +559,7 @@
   const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   // Version du jeu : affichée sur l'accueil et lue par android/build-apk.ps1 pour numéroter l'APK.
   // À changer à chaque nouvelle version (une seule source de vérité).
-  const GAME_VERSION = '1.6';
+  const GAME_VERSION = '1.7';
 
   // Serveur des classements (Supabase). Vides tant que le projet n'est pas créé : le jeu fonctionne
   // alors hors ligne. Ajouter « ?mock=1 » à l'adresse simule un serveur local pour tester.
@@ -1134,9 +1134,17 @@
     }
   }
 
+  const ENDED_KEEP = 12;
+  function cleanEnded(list) {
+    const nums = (Array.isArray(list) ? list : []).map(Number).filter(n => Number.isFinite(n) && n > 0);
+    return [...new Set(nums)].slice(-ENDED_KEEP);
+  }
+
   function cleanSpecial(p) {
-    const o = { best: 0, bestCombo: 0, plays: 0, game: null, date: '' };
+    // ended : identifiants des parties infinies terminées ou abandonnées, pour ne pas les ressusciter via la synchro (v1.7)
+    const o = { best: 0, bestCombo: 0, plays: 0, game: null, date: '', ended: [] };
     if (!p || typeof p !== 'object') return o;
+    o.ended = cleanEnded(p.ended);
     o.best = Math.max(0, Math.floor(Number(p.best)) || 0);
     o.bestCombo = Math.max(0, Math.floor(Number(p.bestCombo)) || 0);
     o.plays = Math.max(0, Math.floor(Number(p.plays)) || 0);
@@ -1216,6 +1224,7 @@
     // Partie chronométrée : pas de pause d'une session à l'autre. Puzzle : on recommence le niveau.
     if (isTimed() || state.mode === 'puzzle') return;
     slot().game = {
+      gid: state.mode === 'endless' ? state.gid : undefined,
       level: state.level,
       score: state.score,
       cells: state.cells.map(c => c.stack.slice()),
@@ -1236,6 +1245,15 @@
       rngState,
     };
     persist();
+    // Monde infini : la partie en cours suit le joueur d'un appareil à l'autre (v1.7)
+    if (state.mode === 'endless') scheduleCloudSave();
+  }
+
+  /** Marque une partie infinie comme terminée ou abandonnée : aucun appareil ne la reprendra. */
+  function markEndlessEnded(gid) {
+    if (!gid) return;
+    const rec = save.special.endless;
+    if (!rec.ended.includes(gid)) rec.ended = rec.ended.concat(gid).slice(-ENDED_KEEP);
   }
 
   function clearGame() {
@@ -1421,6 +1439,11 @@
     state.moveCount = 0;
     state.dailyLog = [];
     state.endlessSent = 0; // Monde infini : dernier score envoyé au classement
+    if (state.mode === 'endless') {
+      // Nouvelle partie volontaire : l'ancienne ne doit plus revenir par la synchro. restoreGame remet l'identifiant repris.
+      if (persistIt) markEndlessEnded(state.gid);
+      state.gid = Date.now();
+    }
     worldText = '';
     state.lastShrinkTurn = 0;
     state.nextRockTurn = rockInterval(0);
@@ -1469,6 +1492,7 @@
   /** Reprend une partie sauvegardée : même plateau, même dock, mêmes outils. */
   function restoreGame(g) {
     startLevel(g.level, false);
+    if (state.mode === 'endless') state.gid = Number(g.gid) > 0 ? Number(g.gid) : Date.now();
     state.cells.forEach((c, i) => { c.stack = g.cells[i].slice(); });
     state.dock = g.dock.map((s, i) => (s && s.length ? { stack: s.slice(), born: now + i * 110 } : null));
     if (state.dock.every(d => !d)) refillDock();
@@ -2482,6 +2506,7 @@
     rec.bestCombo = Math.max(rec.bestCombo, state.levelBestCombo);
     rec.plays++;
     rec.game = null;
+    if (state.mode === 'endless') markEndlessEnded(state.gid);
     persist();
     scheduleCloudSave();
     const why = { moves: 'Toutes les piles ont été posées.', time: 'Temps écoulé !', full: 'Plus aucune case libre.' }[reason];
@@ -3388,7 +3413,36 @@
       const sp = save.special[k];
       out.special[k] = { best: sp.best, bestCombo: sp.bestCombo, plays: sp.plays, date: sp.date };
     }
+    // v1.7 : la partie infinie en cours voyage aussi (quelques Ko), avec la liste des parties déjà terminées
+    const en = save.special.endless;
+    out.special.endless.ended = en.ended;
+    if (en.game) out.special.endless.game = en.game;
     return out;
+  }
+
+  /**
+   * Monde infini : garde la partie la plus avancée parmi celles qui ne sont pas terminées (v1.7).
+   * - une partie terminée ou abandonnée sur un appareil (liste « ended ») ne revient jamais ;
+   * - entre deux parties encore ouvertes, celle qui a le meilleur score gagne (la plus avancée) ;
+   * - la partie jouée à l'écran à cet instant n'est jamais remplacée sous les doigts du joueur.
+   * l = save.special.endless, r = données du serveur. Renvoie true si l'emplacement local a changé.
+   */
+  function mergeEndlessGame(l, r) {
+    let changed = false;
+    const ended = cleanEnded((l.ended || []).concat(Array.isArray(r.ended) ? r.ended : []));
+    if (ended.length !== l.ended.length || ended.some((n, i) => n !== l.ended[i])) { l.ended = ended; changed = true; }
+    if (l.game && ended.includes(Number(l.game.gid))) { l.game = null; changed = true; }
+    const rg = r.game;
+    if (!rg || typeof rg !== 'object' || !validGame(rg, 3)) return changed;
+    if (ended.includes(Number(rg.gid))) return changed;
+    const playingNow = state.mode === 'endless' && !state.over && !!state.gid;
+    if (playingNow && Number(rg.gid) !== state.gid) return changed;
+    const remoteScore = toCount(rg.score);
+    if (l.game && Number(l.game.gid) === Number(rg.gid) && remoteScore <= toCount(l.game.score)) return changed;
+    if (l.game && Number(l.game.gid) !== Number(rg.gid) && remoteScore <= toCount(l.game.score)) return changed;
+    if (playingNow) return changed; // même partie, mais plus avancée ailleurs : on la reprendra à la prochaine ouverture
+    l.game = rg;
+    return true;
   }
 
   /** Fusionne une progression venue du serveur dans la sauvegarde de cet appareil. Renvoie true si elle apporte du neuf. */
@@ -3428,6 +3482,7 @@
       }
       if (best > l.best) { l.best = best; changed = true; }
       if (bestCombo > l.bestCombo) { l.bestCombo = bestCombo; changed = true; }
+      if (k === 'endless' && mergeEndlessGame(l, r)) changed = true;
     }
     // Puzzles : dernier débloqué et meilleures étoiles
     const rp = remote.puzzle;
